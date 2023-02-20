@@ -210,7 +210,7 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 			file_count++;
 		}	
 	}
-	for (int i = 0; i<subdirec; i++) {
+	for (int i = 0; i<=subdirec; i++) {
 		unsigned long long int sub_block = subdirectory_blocks[i];
 		unsigned char* sub_name = subdirectories[i];
 		unsigned long long int sub_size = subdirectory_sizes[i];
