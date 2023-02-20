@@ -18,15 +18,62 @@ struct redsea_file {
 	unsigned char name[39]; // file names can be 38 chars
 	unsigned long long int size;
 	unsigned long long int block;
+	unsigned long long int mod_date; // not implemented.
 };
 struct redsea_directory {
 	unsigned char name[39];
 	unsigned long long int block;
 	unsigned long long int size;
-	int entries;
-	unsigned char* children[];
-
+	unsigned long long int mod_date; // not implemented
 };
+
+
+// maybe not best practice to have this all global, but there's no reason my 
+// functions *shouldn't* be able to access this. TempleOS is like a motorcyle
+// if you lean to far you'll crash. Don't do that
+int max_directory_count = 20;
+int max_file_count = 20;
+char (*directory_paths)[512];		// malloced in main
+char (*file_paths)[512];		// 20 max default, will be expanded if exceeded
+				// there is a 512 byte path limit (temporarily?)
+				// Do not want to implement a better way right
+				// now
+int directory_count = 0;
+int file_count = 0;
+
+bool is_directory(unsigned char *path) {
+	path++;
+	for (int i = 0; i < directory_count; i++) {
+		if (strcmp (path, directory_paths[i]) == 0) return true;
+	}
+	return false;
+}
+// double directory array
+void expand_directories() {
+	max_directory_count *= 2;
+	printf("%d", max_directory_count);
+	char (*directory_paths_2)[512] = malloc(max_directory_count*512);
+	for (int i = 0; i<directory_count; i++) {
+		//directory_paths_2[i] = malloc(sizeof(char)*512);
+		strcpy(directory_paths_2[i], directory_paths[i]);
+		//free(directory_paths[i]);
+	}
+	free(directory_paths);
+	directory_paths = directory_paths_2;
+
+}
+// double file array
+void expand_files() {
+	max_file_count *= 2;
+	char (*file_paths_2)[512] = malloc(max_file_count*512);
+	for (int i = 0; i<file_count; i++) {
+		strcpy(file_paths_2[i], file_paths[i]);
+		//free(file_paths[i]);
+	}
+	free(file_paths);
+	file_paths = file_paths_2;
+
+}
 
 void read_directory(int block, FILE* image) {
 	unsigned char* buf;
@@ -67,7 +114,7 @@ bool redsea_identity_check(unsigned int boot_catalog, FILE* image) {
 	fseek(image, (boot_catalog*ISO_9660_SECTOR_SIZE+4), SEEK_SET);
 	fread(&buf, 4, 1, image);
 	unsigned int tos_string = 0x706d6554;	// check for TempleOS fs signature. not the actual signature location
-						// always be there. I should probably make this look for the
+						// but will always be there. I should probably make this look for the
 						// actual RedSea signature
 	if (buf != tos_string) return false;
 	return true;
@@ -81,7 +128,8 @@ bool redsea_identity_check(unsigned int boot_catalog, FILE* image) {
  * image is the image file being read.
  * size is the size of the directory
  */
-void redsea_read_files(unsigned long long int block, unsigned long long int size, FILE* image, unsigned char *directory) {
+void redsea_read_files(unsigned long long int block, unsigned long long int size, FILE* image, unsigned char *directory, unsigned char *path_so_far) {
+	//strcat(path_so_far, "/");
 	uint16_t filetype = 0;		// 0x0810 for directories, 0x0820 for files, 0x0c20 for compressed files
 	unsigned char name[39];
 	unsigned long long int file_block;
@@ -89,8 +137,10 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 	int seek_count = 0;
 	int subdirec = -1;
 	unsigned char subdirectories[size/64][39]; 	// directory size / 64 is max entries in a directory
+	unsigned char subdirectory_paths[size/64][512];
 	unsigned long long int subdirectory_blocks[size/64];
 	unsigned long long int subdirectory_sizes[size/64];
+	unsigned char path[strlen(path_so_far)+40];
 	fseek(image, (block*BLOCK_SIZE), SEEK_SET);
 	for ( ;; ) {
 		fread(&filetype, 2, 1, image);
@@ -127,32 +177,55 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 		
 		fread(&file_size, 8, 1, image);
 		seek_count+=8;
-		printf("%s / %s BLOCK %x SIZE %x\n", directory, name, file_block, file_size);
-		fseek(image, 8, SEEK_CUR);
+		strcpy(path, path_so_far);
+		strcat(path, "/");
+		strcat(path, name);
+		printf("%s BLOCK %x SIZE %x\n", path, file_block, file_size);
+		fseek(image, 8, SEEK_CUR); // TODO: This is the date timestamp. Follows format of 0xFFFFFFFF 0xFFFFFFFF
+					   // with upper 32 bits being days since Christ's birth on January 2nd 1BC
+					   // and lower 32 bits being the time of day divided by 4 billion
 		seek_count+=8;
 		if (filetype == 0x0810) {
 			if (strcmp(directory, name) != 0 && strcmp("..", name) != 0) {
-				subdirec++; 
+				subdirec++;
 				memcpy(subdirectories[subdirec], name, strlen(name)+1);
 				subdirectory_blocks[subdirec] = file_block;
 				subdirectory_sizes[subdirec] = file_size;
+				strcpy(subdirectory_paths[subdirec], path);
+
+				// global directory array
+				if (directory_count+1 >= max_directory_count) {
+					expand_directories();
+				}
+				strcpy(directory_paths[directory_count], path);
+				directory_count++;
 			}
+		}
+		else {
+			if (file_count+1 >= max_file_count) {
+				expand_files();
+			}
+			strcpy(file_paths[file_count], path);
+			//printf("%s\n", file_paths[file_count]);
+			file_count++;
 		}	
 	}
 	for (int i = 0; i<subdirec; i++) {
 		unsigned long long int sub_block = subdirectory_blocks[i];
 		unsigned char* sub_name = subdirectories[i];
 		unsigned long long int sub_size = subdirectory_sizes[i];
-		redsea_read_files(sub_block, sub_size, image, sub_name);
+		unsigned char* sub_path = subdirectory_paths[i];
+		redsea_read_files(sub_block, sub_size, image, sub_name, sub_path);
+		printf("EOD\n");
 	}
 
 }
 
 static int fuse_rs_file_attributes(const char *path, struct stat *st) {
-	if (!strcmp(path, "/")) {
+	if (strcmp(path, "/") == 0 || strcmp(path, "/test") == 0) {
 		st->st_mode = S_IFDIR | 0755;
 		st->st_nlink = 2;
-		st -> st_size = 512;
+		st -> st_size = 4096;
 	}
 	else {
 		st-> st_mode = S_IFREG | 0644;
@@ -161,15 +234,22 @@ static int fuse_rs_file_attributes(const char *path, struct stat *st) {
 	}
 	st->st_uid = getuid();
 	st->st_gid = getgid();
-	st->st_size = 512;
 	return 0;
 }
 
 static int fuse_rs_read_directory(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-	filler(buffer, ".", NULL, 0);
-	filler(buffer, "..", NULL, 0);
-	//filler(buffer, "/test", NULL, 0);
-	filler(buffer, "test.txt", NULL, 0);
+	if (strcmp(path, "/") == 0) {
+		filler(buffer, ".", NULL, 0);
+		filler(buffer, "..", NULL, 0);
+		filler(buffer, "test", NULL, 0);
+		filler(buffer, "test.txt", NULL, 0);
+		filler(buffer, "test.png", NULL, 0);
+	}
+	else if (strcmp(path, "/test") == 0) {
+		filler(buffer, ".", NULL, 0);
+		filler(buffer, "..", NULL, 0);
+		filler(buffer, "test.mov", NULL, 0);
+	}
 	return 0;
 }
 
@@ -181,6 +261,8 @@ static struct fuse_operations redsea_ops = {
 char *devfile = NULL;
 
 int main(int argc, char **argv) {
+	directory_paths = malloc(max_directory_count*512);
+	file_paths = malloc(max_file_count*512);
 	int i;
 	for (i = 1; i<argc && argv[i][0] == '-'; i++);
 	if (i < argc) {
@@ -205,7 +287,7 @@ int main(int argc, char **argv) {
 	unsigned long long int size;
 	fread(&size, 8, 1, image);				// get root directory size before reading. probably inefficient	
 	printf("size: %x\n", size);
-	redsea_read_files(rdb, size, image, ".");
+	redsea_read_files(rdb, size, image, ".", "");
 
 	return fuse_main(argc, argv, &redsea_ops, NULL);
 	
