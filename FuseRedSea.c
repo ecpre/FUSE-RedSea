@@ -2,6 +2,8 @@
 #define _FILE_OFFSET_BITS 64
 #define BLOCK_SIZE 512			// RedSea Block Size
 #define ISO_9660_SECTOR_SIZE 2048
+#define UNIX_CDATE_SECONDS 62167132800 	// seconds to subtract from CDate seconds for unix time
+					// 719527*84000
 #include <fuse.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -11,7 +13,7 @@
 
 /* RedSea FUSE driver
  * for the TempleOS RedSea filesystem
- *
+ * as of right now read only
  */
 
 struct redsea_file {
@@ -42,13 +44,39 @@ struct redsea_directory** directory_structs;
 struct redsea_file** file_structs;
 int directory_count = 1;
 int file_count = 0;
+FILE* image;			// image is going to be global. makes it easier
 
-bool is_directory(const char *path) {
+//Converts templeOS CDate (Christ date?) format to unix time.
+long long int cdate_to_unix(unsigned long long int cdate) {
+	unsigned int lower = cdate & 0xFFFFFFFF;
+	unsigned int upper = (cdate>>32) & 0xFFFFFFFF;
+       	unsigned long long int cdate_upper_seconds = upper*86400LL;
+	long int cdate_lower_seconds = lower/49710;
+	unsigned long long int unix_seconds = cdate_upper_seconds+cdate_lower_seconds-UNIX_CDATE_SECONDS;
+	return unix_seconds;
+}
+
+bool is_directory(const char* path) {
 	for (int i = 0; i < directory_count; i++) {
 		if (strcmp (path, directory_paths[i]) == 0) return true;
 	}
 	return false;
 }
+
+unsigned long long int directory_position(const char* path) {
+	for (unsigned long long int i=0; i<directory_count; i++) {
+		if (strcmp (path, directory_paths[i]) == 0) return i;
+	}
+	return -1;
+}
+
+unsigned long long int file_position(const char* path) {
+	for (unsigned long long int i = 0; i < file_count; i++) {
+		if (strcmp (path, file_paths[i]) == 0) return i;
+	}
+	return -1;
+}
+
 // double directory array
 void expand_directories() {
 	max_directory_count *= 2;
@@ -93,22 +121,17 @@ bool redsea_identity_check(unsigned int boot_catalog, FILE* image) {
 	fseek(image, (boot_catalog*ISO_9660_SECTOR_SIZE+4), SEEK_SET);
 	fread(&buf, 4, 1, image);
 	unsigned int tos_string = 0x706d6554;	// check for TempleOS fs signature. not the actual signature location
-						// but will always be there. I should probably make this look for the
-						// actual RedSea signature
+						// but will this will always be there. I should probably make this 
+						// look for the actual RedSea signature. :/
 	if (buf != tos_string) return false;
 	return true;
 }
 
 /*
  * Reads all the files and child directories of a given redsea directory
- * Called in main as redsea_read_files(rdb, image, ".");
- * *directory is the name of the directory being searched.
- * block is the directory's starting block
- * image is the image file being read.
- * size is the size of the directory
+ * First called in main.
  */
-//void redsea_read_files(unsigned long long int block, unsigned long long int size, FILE* image, unsigned char *directory, unsigned char *path_so_far) {
-void redsea_read_files(struct redsea_directory* directory, FILE* image, unsigned char *path_so_far) {
+void redsea_read_files(struct redsea_directory* directory, unsigned char *path_so_far) {
 	
 	unsigned long long int block = directory->block;
 	unsigned long long int size = directory->size;
@@ -122,21 +145,14 @@ void redsea_read_files(struct redsea_directory* directory, FILE* image, unsigned
 	unsigned long long int file_block;
 	unsigned long long int file_size;
 	unsigned long long int timestamp;
-	int seek_count = 0;
 	int subdirec = -1;
 	struct redsea_directory* subdirectories[size/64]; 	// directory size / 64 is max entries in a directory
 	unsigned char subdirectory_paths[size/64][512];
-	//unsigned long long int subdirectory_blocks[size/64];
-	//unsigned long long int subdirectory_sizes[size/64];
 	unsigned char path[strlen(path_so_far)+40];
 	fseek(image, (block*BLOCK_SIZE), SEEK_SET);
 	for ( ;; ) {
 		fread(&filetype, 2, 1, image);
-		seek_count+=2;
 		if (filetype == 0) {
-			//printf("%d\n", seek_count);
-			//printf("%x\n", filetype);
-			//printf("directory end\n");
 			break;				// end of directory
 		}
 		printf("0x%04x ", filetype);
@@ -153,27 +169,18 @@ void redsea_read_files(struct redsea_directory* directory, FILE* image, unsigned
 				}
 				name[i] = '\0';		// terminate file name
 				fseek(image, 37-i, SEEK_CUR);
-				seek_count+= (37-i);
 				break;
 			}
 			name[i] = current;
 		}
 		fread(&file_block, 8, 1, image);
-		seek_count+=8;
-		//printf("%x\n", file_block);
-		//printf("%s\n", name);
 		
 		fread(&file_size, 8, 1, image);
-		seek_count+=8;
 		strcpy(path, path_so_far);
 		strcat(path, "/");
 		strcat(path, name);
-		fread(&timestamp, 8, 1, image);	// TODO: This is the date timestamp. Follows format of 0xFFFFFFFF 0xFFFFFFFF
-					   	// with upper 32 bits being days since Christ's birth on January 2nd 1BC
-					   	// and lower 32 bits being the time of day divided by 4 billion
-
-		printf("%s BLOCK %x SIZE %x TIMESTAMP %x \n", path, file_block, file_size, timestamp);
-		seek_count+=8;
+		fread(&timestamp, 8, 1, image);						   			
+		printf("%s BLOCK %#lx SIZE %#lx TIMESTAMP %#016lx \n", path, file_block, file_size, timestamp);
 		if (filetype == 0x0810) {
 			if (strcmp(directory_name, name) != 0 && strcmp("..", name) != 0) {
 				subdirec++;
@@ -205,7 +212,6 @@ void redsea_read_files(struct redsea_directory* directory, FILE* image, unsigned
 			}
 			file_paths[file_count] = malloc(strlen(path)+1);
 			strcpy(file_paths[file_count], path);
-			printf("%s\n", file_paths[file_count]);
 			// create file entry struct after inserting path
 			struct redsea_file* file_entry = malloc(sizeof(struct redsea_file));
 			strcpy(file_entry->name, name);	
@@ -227,28 +233,39 @@ void redsea_read_files(struct redsea_directory* directory, FILE* image, unsigned
 
 		struct redsea_directory* subdir = subdirectories[i];
 		unsigned char* sub_path = subdirectory_paths[i];
-		redsea_read_files(subdir, image, sub_path);
-		printf("EOD\n");
+		redsea_read_files(subdir, sub_path);
 	}
 
 }
 
+/* Gets the contents of a given file
+ * 
+ */
+
+unsigned char* redsea_file_content(struct redsea_file* rs_file, size_t size, off_t offset) {
+	rewind(image);
+	unsigned char* content = malloc(size);
+	printf("%d\n", size);
+	fseek(image, (rs_file->block)*BLOCK_SIZE+offset, SEEK_SET);
+	fread(content, 1, size, image);
+	return content;
+}
+
 static int fuse_rs_file_attributes(const char *path, struct stat *st) {
 	if (strcmp(path, "/") == 0 || is_directory(path)) {
-		for (int i = 0; i < directory_count; i++) {
-			if (strcmp(path, directory_paths[i]) == 0) {
-				st->st_size = directory_structs[i]->size;
-			}
-		}
+		unsigned long long int did = directory_position(path);			// did is Directory ID
+		if (did == -1) return -1;
+		st->st_size = directory_structs[did]->size;
+		st->st_mtime = cdate_to_unix(directory_structs[did]->mod_date);
 		st->st_mode = S_IFDIR | 0755;
 		st->st_nlink = 2;
+		
 	}
 	else {
-		for (int i = 0; i<file_count; i++) {
-			if (strcmp(path, file_paths[i]) == 0) {
-				st->st_size = file_structs[i]->size;
-			}	
-		}
+		unsigned long long int fid = file_position(path);			// fid is File ID
+		if (fid == -1) return -1;
+		st->st_size = file_structs[fid]->size;
+		st->st_mtime = cdate_to_unix(file_structs[fid]->mod_date);
 		st-> st_mode = S_IFREG | 0644;
 		st-> st_nlink = 2;
 	}
@@ -261,20 +278,30 @@ static int fuse_rs_file_attributes(const char *path, struct stat *st) {
 static int fuse_rs_read_directory(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
 	filler(buffer, ".", NULL, 0);
 	filler(buffer, "..", NULL, 0);
-	for (int i = 0; i < directory_count; i++) {
-		if (strcmp(path, directory_paths[i]) == 0) {
-			unsigned long long int num_children = directory_structs[i]->num_children;
-			for (int j = 0; j<num_children; j++) {
-				filler(buffer, directory_structs[i]->children[j], NULL, 0);
-			}
-		}
+	unsigned long long int did = directory_position(path);				// did is Directory ID
+	unsigned long long int num_children = directory_structs[did]->num_children;
+	if (did==-1) return -1;
+	for (int j = 0; j<num_children; j++) {
+		filler(buffer, directory_structs[did]->children[j], NULL, 0);
 	}
 	return 0;
 }
 
+static int fuse_rs_read_file(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
+	unsigned long long int fid = file_position(path);
+	if (fid == -1) return -1;
+	unsigned char* file_contents;
+
+	file_contents = redsea_file_content(file_structs[fid], size, offset);
+	memcpy(buffer, file_contents, size);
+
+	return size;	
+}
+
 static struct fuse_operations redsea_ops = {
 	.getattr = fuse_rs_file_attributes,
-	.readdir = fuse_rs_read_directory
+	.readdir = fuse_rs_read_directory,
+	.read = fuse_rs_read_file			// all I have implemented now. write access soon. maybe
 };
 
 char *devfile = NULL;
@@ -293,17 +320,16 @@ int main(int argc, char **argv) {
 		argc--;
 	}
 
-	FILE* image = fopen(devfile, "rb");		// open disk image
+	image = fopen(devfile, "rb");				// open disk image
 	unsigned int bcp = boot_catalog_pointer(image);
 	if (redsea_identity_check(bcp, image)) printf("good\n");
-	else printf("bad\n");
-	printf("0x%x\n", bcp);
-	printf("0x%x\n", 0x8800);
+	else printf("bad. not redsea?\n");
+	printf("%#x\n", bcp);
 	unsigned int rdb = root_directory_block(0x58, image);	// first param should always be 0x58, but maybe I don't know the specification well enough
 	fseek(image, (rdb*BLOCK_SIZE)+48, SEEK_SET);
 	unsigned long long int size;
 	fread(&size, 8, 1, image);				// get root directory size before reading. probably inefficient	
-	printf("size: %x\n", size);
+	printf("size: %#lx\n", size);
 	struct redsea_directory* root_directory = malloc(sizeof(struct redsea_directory));
 	strcpy(root_directory->name, ".");
 	root_directory->size = size;
@@ -315,7 +341,7 @@ int main(int argc, char **argv) {
 	directory_structs[0] = root_directory;
 
 	//redsea_read_files(rdb, size, image, ".", "");
-	redsea_read_files(root_directory, image, "");
+	redsea_read_files(root_directory, "");
 
 	return fuse_main(argc, argv, &redsea_ops, NULL);
 	
