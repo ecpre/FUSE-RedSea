@@ -2,10 +2,6 @@
 #define _FILE_OFFSET_BITS 64
 #define BLOCK_SIZE 512			// RedSea Block Size
 #define ISO_9660_SECTOR_SIZE 2048
-#define MAX_PATH_LEN 512		// arbitrary and not defined in RedSea at all
-					// I should really remove this.
-					// Change this at compile if this is an issue for you
-					// I guess
 #include <fuse.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -22,31 +18,32 @@ struct redsea_file {
 	unsigned char name[39]; // file names can be 38 chars
 	unsigned long long int size;
 	unsigned long long int block;
-	unsigned long long int mod_date; // not implemented.
+	unsigned long long int mod_date;
 };
 struct redsea_directory {
 	unsigned char name[39];
-	unsigned long long int block;
 	unsigned long long int size;
-	unsigned long long int mod_date; // not implemented
+	unsigned long long int block;
+	unsigned long long int mod_date;
+	unsigned long long int num_children;
+	char** children;
+	
 };
 
 
 // maybe not best practice to have this all global, but there's no reason my 
 // functions *shouldn't* be able to access this. TempleOS is like a motorcyle
-// if you lean to far you'll crash. Don't do that
+// if you lean too far you'll crash. Don't do that
 int max_directory_count = 20;
 int max_file_count = 20;
-char (*directory_paths)[MAX_PATH_LEN];		// malloced in main
-char (*file_paths)[MAX_PATH_LEN	];		// 20 max default, will be expanded if exceeded
-						// there is a 512 byte path limit (temporarily?)
-						// Do not want to implement a better way right
-						// now
-int directory_count = 0;
+char** directory_paths;		// malloced in main
+char** file_paths;		// 20 max default, will be expanded if exceeded
+struct redsea_directory** directory_structs;
+struct redsea_file** file_structs;
+int directory_count = 1;
 int file_count = 0;
 
 bool is_directory(unsigned char *path) {
-	path++;
 	for (int i = 0; i < directory_count; i++) {
 		if (strcmp (path, directory_paths[i]) == 0) return true;
 	}
@@ -55,12 +52,14 @@ bool is_directory(unsigned char *path) {
 // double directory array
 void expand_directories() {
 	max_directory_count *= 2;
-	directory_paths = realloc(directory_paths, max_directory_count*MAX_PATH_LEN);
+	directory_paths = realloc(directory_paths, sizeof(char*)*max_directory_count);
+	directory_structs = realloc(directory_structs, sizeof(struct redsea_directory*)*max_directory_count);
 }
 // double file array
 void expand_files() {
 	max_file_count *= 2;
-	file_paths = realloc(file_paths, max_file_count*MAX_PATH_LEN);
+	file_paths = realloc(file_paths, sizeof(char*)*max_file_count);
+	file_structs = realloc(file_structs, sizeof(struct redsea_file*)*max_file_count);
 }
 
 unsigned int boot_catalog_pointer(FILE* image) {
@@ -109,11 +108,19 @@ bool redsea_identity_check(unsigned int boot_catalog, FILE* image) {
  * size is the size of the directory
  */
 void redsea_read_files(unsigned long long int block, unsigned long long int size, FILE* image, unsigned char *directory, unsigned char *path_so_far) {
+	
+	//unsigned long long int block;
+	//unsigned long long int size;
+	//unsigned char *directory; // I don't think this is actually needed.
+	unsigned long long int num_children;
+
+
 	//strcat(path_so_far, "/");
 	uint16_t filetype = 0;		// 0x0810 for directories, 0x0820 for files, 0x0c20 for compressed files
 	unsigned char name[39];
 	unsigned long long int file_block;
 	unsigned long long int file_size;
+	unsigned long long int timestamp;
 	int seek_count = 0;
 	int subdirec = -1;
 	unsigned char subdirectories[size/64][39]; 	// directory size / 64 is max entries in a directory
@@ -161,9 +168,9 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 		strcat(path, "/");
 		strcat(path, name);
 		printf("%s BLOCK %x SIZE %x\n", path, file_block, file_size);
-		fseek(image, 8, SEEK_CUR); // TODO: This is the date timestamp. Follows format of 0xFFFFFFFF 0xFFFFFFFF
-					   // with upper 32 bits being days since Christ's birth on January 2nd 1BC
-					   // and lower 32 bits being the time of day divided by 4 billion
+		fread(&timestamp, 8, 1, image);	// TODO: This is the date timestamp. Follows format of 0xFFFFFFFF 0xFFFFFFFF
+					   	// with upper 32 bits being days since Christ's birth on January 2nd 1BC
+					   	// and lower 32 bits being the time of day divided by 4 billion
 		seek_count+=8;
 		if (filetype == 0x0810) {
 			if (strcmp(directory, name) != 0 && strcmp("..", name) != 0) {
@@ -177,7 +184,18 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 				if (directory_count+1 >= max_directory_count) {
 					expand_directories();
 				}
+				directory_paths[directory_count] = malloc(strlen(path));
 				strcpy(directory_paths[directory_count], path);
+				//create directory entry struct
+				struct redsea_directory* directory_entry = malloc(sizeof(struct redsea_directory));
+				strcpy(directory_entry->name, name);
+				directory_entry -> size = file_size;
+				directory_entry -> block = file_block;
+				directory_entry -> mod_date = timestamp;
+				directory_entry -> children = malloc(sizeof(char*)*(file_size/64));
+				directory_entry -> num_children = 0;
+				directory_structs[directory_count] = directory_entry;
+				
 				directory_count++;
 			}
 		}
@@ -185,10 +203,20 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 			if (file_count+1 >= max_file_count) {
 				expand_files();
 			}
+			file_paths[file_count] = malloc(strlen(path)+1);
 			strcpy(file_paths[file_count], path);
-			//printf("%s\n", file_paths[file_count]);
+			printf("%s\n", file_paths[file_count]);
+			// create file entry struct after inserting path
+			struct redsea_file* file_entry = malloc(sizeof(struct redsea_file));
+			strcpy(file_entry->name, name);	
+			file_entry -> size = file_size;
+			file_entry -> block = file_block;
+			file_entry -> mod_date = timestamp;
+			file_structs[file_count] = file_entry;
+
 			file_count++;
-		}	
+		}
+		num_children++;	
 	}
 	for (int i = 0; i<=subdirec; i++) {
 		unsigned long long int sub_block = subdirectory_blocks[i];
@@ -241,8 +269,10 @@ static struct fuse_operations redsea_ops = {
 char *devfile = NULL;
 
 int main(int argc, char **argv) {
-	directory_paths = malloc(max_directory_count*512);
-	file_paths = malloc(max_file_count*512);
+	directory_paths = malloc(sizeof(char*)*max_directory_count);
+	directory_structs = malloc(sizeof(struct redsea_directory*)*max_directory_count);
+	file_paths = malloc(sizeof(char*)*max_file_count);
+	file_structs = malloc(sizeof(struct redsea_file*)*max_directory_count);
 	int i;
 	for (i = 1; i<argc && argv[i][0] == '-'; i++);
 	if (i < argc) {
@@ -263,6 +293,16 @@ int main(int argc, char **argv) {
 	unsigned long long int size;
 	fread(&size, 8, 1, image);				// get root directory size before reading. probably inefficient	
 	printf("size: %x\n", size);
+	struct redsea_directory* root_directory = malloc(sizeof(struct redsea_directory));
+	strcpy(root_directory->name, ".");
+	root_directory->size = size;
+	root_directory->block = rdb;
+	root_directory->mod_date = 0;
+	root_directory->num_children = 0;
+	root_directory->children = malloc(sizeof(char*)*(size/64));
+	directory_paths[0] = "/";
+	directory_structs[0] = root_directory;
+
 	redsea_read_files(rdb, size, image, ".", "");
 
 	return fuse_main(argc, argv, &redsea_ops, NULL);
