@@ -235,15 +235,24 @@ void redsea_read_files(struct redsea_directory* directory, FILE* image, unsigned
 
 static int fuse_rs_file_attributes(const char *path, struct stat *st) {
 	if (strcmp(path, "/") == 0 || is_directory(path)) {
+		for (int i = 0; i < directory_count; i++) {
+			if (strcmp(path, directory_paths[i]) == 0) {
+				st->st_size = directory_structs[i]->size;
+			}
+		}
 		st->st_mode = S_IFDIR | 0755;
 		st->st_nlink = 2;
-		st -> st_size = 4096;
 	}
 	else {
+		for (int i = 0; i<file_count; i++) {
+			if (strcmp(path, file_paths[i]) == 0) {
+				st->st_size = file_structs[i]->size;
+			}	
+		}
 		st-> st_mode = S_IFREG | 0644;
 		st-> st_nlink = 2;
-		st-> st_size = 512;
 	}
+	//st->st_size = 512;
 	st->st_uid = getuid();
 	st->st_gid = getgid();
 	return 0;
@@ -256,26 +265,10 @@ static int fuse_rs_read_directory(const char *path, void *buffer, fuse_fill_dir_
 		if (strcmp(path, directory_paths[i]) == 0) {
 			unsigned long long int num_children = directory_structs[i]->num_children;
 			for (int j = 0; j<num_children; j++) {
-				printf("%s\n", directory_structs[i]->children[j]);
 				filler(buffer, directory_structs[i]->children[j], NULL, 0);
 			}
 		}
 	}
-	/*
-	if (strcmp(path, "/") == 0) {
-		filler(buffer, ".", NULL, 0);
-		filler(buffer, "..", NULL, 0);
-		filler(buffer, "test", NULL, 0);
-		filler(buffer, "test.txt", NULL, 0);
-		filler(buffer, "test.png", NULL, 0);
-	}
-	else if (strcmp(path, "/test") == 0) {
-		filler(buffer, ".", NULL, 0);
-		filler(buffer, "..", NULL, 0);
-		filler(buffer, "test.mov", NULL, 0);
-	}
-	return 0;
-	*/
 	return 0;
 }
 
