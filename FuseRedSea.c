@@ -253,8 +253,6 @@ int main(int argc, char **argv) {
 	}
 
 	FILE* image = fopen(devfile, "rb");		// open disk image
-	fseek(image, 0x8800, SEEK_SET);			// seek to 0x8800
-	rewind(image);	
 	unsigned int bcp = boot_catalog_pointer(image);
 	if (redsea_identity_check(bcp, image)) printf("good\n");
 	else printf("bad\n");
