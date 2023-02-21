@@ -50,7 +50,7 @@ Bytes 56-63 represent the time the file was last modified using the CDate date s
 
 CDate is TempleOS's custom date format, based off of the birth of Christ.
 
-CDates are given using a 64 bit integer, with the upper 32 bits `0xFFFF` representing the number of days since the birth of Christ on January 2nd, 1 BC, and the lower 32 bits `0xFFFF` representing the time of day divided by 4 billion, giving it the precision of 1/49710ths of a second.
+CDates are given using a 64 bit integer, with the upper 32 bits `0xFFFFFFFF` representing the number of days since the birth of Christ on January 2nd, 1 BC, and the lower 32 bits `0xFFFFFFFF` representing the time of day divided by 4 billion, giving it the precision of 1/49710ths of a second.
 
 As an example: the CDATE `0x000B4371D95FF3DD` would represent January 7th, 2021 at 20:22:44, with `0x00B04371` representing the days since January 2nd, 1BC, and `0xD95FF3DD` representing the number of 1/49710ths of a second intervals since the start of the day.
 # Credits
