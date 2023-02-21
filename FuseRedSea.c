@@ -314,34 +314,34 @@ int main(int argc, char **argv) {
 	int i;
 	for (i = 1; i<argc && argv[i][0] == '-'; i++);
 	if (i < argc) {
-		devfile = realpath(argv[i], NULL);
+		devfile = argv[i];
 		printf("%s\n", devfile);
 		memcpy(&argv[i], &argv[i+1], (argc-i) * sizeof(argv[0]));
 		argc--;
+	
+		image = fopen(devfile, "rb");				// open disk image
+		unsigned int bcp = boot_catalog_pointer(image);
+		if (redsea_identity_check(bcp, image)) printf("good\n");
+		else printf("bad. not redsea?\n");
+		printf("%#x\n", bcp);
+		unsigned int rdb = root_directory_block(0x58, image);	// first param should always be 0x58, but maybe I don't know the specification well enough
+		fseek(image, (rdb*BLOCK_SIZE)+48, SEEK_SET);
+		unsigned long long int size;
+		fread(&size, 8, 1, image);				// get root directory size before reading. probably inefficient	
+		printf("size: %#lx\n", size);
+		struct redsea_directory* root_directory = malloc(sizeof(struct redsea_directory));
+		strcpy(root_directory->name, ".");
+		root_directory->size = size;
+		root_directory->block = rdb;
+		root_directory->mod_date = 0;
+		root_directory->num_children = 0;
+		root_directory->children = malloc(sizeof(char*)*(size/64));
+		directory_paths[0] = "/";
+		directory_structs[0] = root_directory;
+
+		//redsea_read_files(rdb, size, image, ".", "");
+		redsea_read_files(root_directory, "");
 	}
-
-	image = fopen(devfile, "rb");				// open disk image
-	unsigned int bcp = boot_catalog_pointer(image);
-	if (redsea_identity_check(bcp, image)) printf("good\n");
-	else printf("bad. not redsea?\n");
-	printf("%#x\n", bcp);
-	unsigned int rdb = root_directory_block(0x58, image);	// first param should always be 0x58, but maybe I don't know the specification well enough
-	fseek(image, (rdb*BLOCK_SIZE)+48, SEEK_SET);
-	unsigned long long int size;
-	fread(&size, 8, 1, image);				// get root directory size before reading. probably inefficient	
-	printf("size: %#lx\n", size);
-	struct redsea_directory* root_directory = malloc(sizeof(struct redsea_directory));
-	strcpy(root_directory->name, ".");
-	root_directory->size = size;
-	root_directory->block = rdb;
-	root_directory->mod_date = 0;
-	root_directory->num_children = 0;
-	root_directory->children = malloc(sizeof(char*)*(size/64));
-	directory_paths[0] = "/";
-	directory_structs[0] = root_directory;
-
-	//redsea_read_files(rdb, size, image, ".", "");
-	redsea_read_files(root_directory, "");
 
 	return fuse_main(argc, argv, &redsea_ops, NULL);
 	
