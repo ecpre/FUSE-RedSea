@@ -51,28 +51,12 @@ bool is_directory(unsigned char *path) {
 // double directory array
 void expand_directories() {
 	max_directory_count *= 2;
-	printf("%d", max_directory_count);
-	char (*directory_paths_2)[512] = malloc(max_directory_count*512);
-	for (int i = 0; i<directory_count; i++) {
-		//directory_paths_2[i] = malloc(sizeof(char)*512);
-		strcpy(directory_paths_2[i], directory_paths[i]);
-		//free(directory_paths[i]);
-	}
-	free(directory_paths);
-	directory_paths = directory_paths_2;
-
+	directory_paths = realloc(directory_paths, max_directory_count*512);
 }
 // double file array
 void expand_files() {
 	max_file_count *= 2;
-	char (*file_paths_2)[512] = malloc(max_file_count*512);
-	for (int i = 0; i<file_count; i++) {
-		strcpy(file_paths_2[i], file_paths[i]);
-		//free(file_paths[i]);
-	}
-	free(file_paths);
-	file_paths = file_paths_2;
-
+	file_paths = realloc(file_paths, max_file_count*512);
 }
 
 void read_directory(int block, FILE* image) {
