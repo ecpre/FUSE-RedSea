@@ -2,6 +2,10 @@
 #define _FILE_OFFSET_BITS 64
 #define BLOCK_SIZE 512			// RedSea Block Size
 #define ISO_9660_SECTOR_SIZE 2048
+#define MAX_PATH_LEN 512		// arbitrary and not defined in RedSea at all
+					// I should really remove this.
+					// Change this at compile if this is an issue for you
+					// I guess
 #include <fuse.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -33,11 +37,11 @@ struct redsea_directory {
 // if you lean to far you'll crash. Don't do that
 int max_directory_count = 20;
 int max_file_count = 20;
-char (*directory_paths)[512];		// malloced in main
-char (*file_paths)[512];		// 20 max default, will be expanded if exceeded
-				// there is a 512 byte path limit (temporarily?)
-				// Do not want to implement a better way right
-				// now
+char (*directory_paths)[MAX_PATH_LEN];		// malloced in main
+char (*file_paths)[MAX_PATH_LEN	];		// 20 max default, will be expanded if exceeded
+						// there is a 512 byte path limit (temporarily?)
+						// Do not want to implement a better way right
+						// now
 int directory_count = 0;
 int file_count = 0;
 
@@ -51,20 +55,12 @@ bool is_directory(unsigned char *path) {
 // double directory array
 void expand_directories() {
 	max_directory_count *= 2;
-	directory_paths = realloc(directory_paths, max_directory_count*512);
+	directory_paths = realloc(directory_paths, max_directory_count*MAX_PATH_LEN);
 }
 // double file array
 void expand_files() {
 	max_file_count *= 2;
-	file_paths = realloc(file_paths, max_file_count*512);
-}
-
-void read_directory(int block, FILE* image) {
-	unsigned char* buf;
-	fseek(image, block, SEEK_SET);
-	fseek(image, 0x47, SEEK_CUR);
-	fread(buf, 1, 1, image);
-	rewind(image);
+	file_paths = realloc(file_paths, max_file_count*MAX_PATH_LEN);
 }
 
 unsigned int boot_catalog_pointer(FILE* image) {
@@ -258,9 +254,7 @@ int main(int argc, char **argv) {
 
 	FILE* image = fopen(devfile, "rb");		// open disk image
 	fseek(image, 0x8800, SEEK_SET);			// seek to 0x8800
-	rewind(image);
-	read_directory(0x8800, image);
-	read_directory(0x8801, image);
+	rewind(image);	
 	unsigned int bcp = boot_catalog_pointer(image);
 	if (redsea_identity_check(bcp, image)) printf("good\n");
 	else printf("bad\n");
