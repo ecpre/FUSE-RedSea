@@ -26,7 +26,7 @@ struct redsea_directory {
 	unsigned long long int block;
 	unsigned long long int mod_date;
 	unsigned long long int num_children;
-	char** children;
+	unsigned char** children;
 	
 };
 
@@ -43,7 +43,7 @@ struct redsea_file** file_structs;
 int directory_count = 1;
 int file_count = 0;
 
-bool is_directory(unsigned char *path) {
+bool is_directory(const char *path) {
 	for (int i = 0; i < directory_count; i++) {
 		if (strcmp (path, directory_paths[i]) == 0) return true;
 	}
@@ -107,12 +107,13 @@ bool redsea_identity_check(unsigned int boot_catalog, FILE* image) {
  * image is the image file being read.
  * size is the size of the directory
  */
-void redsea_read_files(unsigned long long int block, unsigned long long int size, FILE* image, unsigned char *directory, unsigned char *path_so_far) {
+//void redsea_read_files(unsigned long long int block, unsigned long long int size, FILE* image, unsigned char *directory, unsigned char *path_so_far) {
+void redsea_read_files(struct redsea_directory* directory, FILE* image, unsigned char *path_so_far) {
 	
-	//unsigned long long int block;
-	//unsigned long long int size;
-	//unsigned char *directory; // I don't think this is actually needed.
-	unsigned long long int num_children;
+	unsigned long long int block = directory->block;
+	unsigned long long int size = directory->size;
+	unsigned char *directory_name = directory->name; 
+	unsigned long long int num_children = directory->num_children;
 
 
 	//strcat(path_so_far, "/");
@@ -123,10 +124,10 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 	unsigned long long int timestamp;
 	int seek_count = 0;
 	int subdirec = -1;
-	unsigned char subdirectories[size/64][39]; 	// directory size / 64 is max entries in a directory
+	struct redsea_directory* subdirectories[size/64]; 	// directory size / 64 is max entries in a directory
 	unsigned char subdirectory_paths[size/64][512];
-	unsigned long long int subdirectory_blocks[size/64];
-	unsigned long long int subdirectory_sizes[size/64];
+	//unsigned long long int subdirectory_blocks[size/64];
+	//unsigned long long int subdirectory_sizes[size/64];
 	unsigned char path[strlen(path_so_far)+40];
 	fseek(image, (block*BLOCK_SIZE), SEEK_SET);
 	for ( ;; ) {
@@ -167,17 +168,16 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 		strcpy(path, path_so_far);
 		strcat(path, "/");
 		strcat(path, name);
-		printf("%s BLOCK %x SIZE %x\n", path, file_block, file_size);
 		fread(&timestamp, 8, 1, image);	// TODO: This is the date timestamp. Follows format of 0xFFFFFFFF 0xFFFFFFFF
 					   	// with upper 32 bits being days since Christ's birth on January 2nd 1BC
 					   	// and lower 32 bits being the time of day divided by 4 billion
+
+		printf("%s BLOCK %x SIZE %x TIMESTAMP %x \n", path, file_block, file_size, timestamp);
 		seek_count+=8;
 		if (filetype == 0x0810) {
-			if (strcmp(directory, name) != 0 && strcmp("..", name) != 0) {
+			if (strcmp(directory_name, name) != 0 && strcmp("..", name) != 0) {
 				subdirec++;
-				memcpy(subdirectories[subdirec], name, strlen(name)+1);
-				subdirectory_blocks[subdirec] = file_block;
-				subdirectory_sizes[subdirec] = file_size;
+
 				strcpy(subdirectory_paths[subdirec], path);
 
 				// global directory array
@@ -185,8 +185,7 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 					expand_directories();
 				}
 				directory_paths[directory_count] = malloc(strlen(path));
-				strcpy(directory_paths[directory_count], path);
-				//create directory entry struct
+				strcpy(directory_paths[directory_count], path);	
 				struct redsea_directory* directory_entry = malloc(sizeof(struct redsea_directory));
 				strcpy(directory_entry->name, name);
 				directory_entry -> size = file_size;
@@ -195,6 +194,7 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 				directory_entry -> children = malloc(sizeof(char*)*(file_size/64));
 				directory_entry -> num_children = 0;
 				directory_structs[directory_count] = directory_entry;
+				subdirectories[subdirec] = directory_entry;
 				
 				directory_count++;
 			}
@@ -216,21 +216,25 @@ void redsea_read_files(unsigned long long int block, unsigned long long int size
 
 			file_count++;
 		}
-		num_children++;	
+		if (strcmp(directory_name, name) != 0 && strcmp("..", name) != 0) {
+			directory -> children[num_children] = malloc(sizeof(char)*strlen(name)+1);
+			strcpy(directory -> children[num_children], name);
+			num_children++;
+		}
 	}
+	directory->num_children = num_children;
 	for (int i = 0; i<=subdirec; i++) {
-		unsigned long long int sub_block = subdirectory_blocks[i];
-		unsigned char* sub_name = subdirectories[i];
-		unsigned long long int sub_size = subdirectory_sizes[i];
+
+		struct redsea_directory* subdir = subdirectories[i];
 		unsigned char* sub_path = subdirectory_paths[i];
-		redsea_read_files(sub_block, sub_size, image, sub_name, sub_path);
+		redsea_read_files(subdir, image, sub_path);
 		printf("EOD\n");
 	}
 
 }
 
 static int fuse_rs_file_attributes(const char *path, struct stat *st) {
-	if (strcmp(path, "/") == 0 || strcmp(path, "/test") == 0) {
+	if (strcmp(path, "/") == 0 || is_directory(path)) {
 		st->st_mode = S_IFDIR | 0755;
 		st->st_nlink = 2;
 		st -> st_size = 4096;
@@ -246,6 +250,18 @@ static int fuse_rs_file_attributes(const char *path, struct stat *st) {
 }
 
 static int fuse_rs_read_directory(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
+	filler(buffer, ".", NULL, 0);
+	filler(buffer, "..", NULL, 0);
+	for (int i = 0; i < directory_count; i++) {
+		if (strcmp(path, directory_paths[i]) == 0) {
+			unsigned long long int num_children = directory_structs[i]->num_children;
+			for (int j = 0; j<num_children; j++) {
+				printf("%s\n", directory_structs[i]->children[j]);
+				filler(buffer, directory_structs[i]->children[j], NULL, 0);
+			}
+		}
+	}
+	/*
 	if (strcmp(path, "/") == 0) {
 		filler(buffer, ".", NULL, 0);
 		filler(buffer, "..", NULL, 0);
@@ -258,6 +274,8 @@ static int fuse_rs_read_directory(const char *path, void *buffer, fuse_fill_dir_
 		filler(buffer, "..", NULL, 0);
 		filler(buffer, "test.mov", NULL, 0);
 	}
+	return 0;
+	*/
 	return 0;
 }
 
@@ -303,7 +321,8 @@ int main(int argc, char **argv) {
 	directory_paths[0] = "/";
 	directory_structs[0] = root_directory;
 
-	redsea_read_files(rdb, size, image, ".", "");
+	//redsea_read_files(rdb, size, image, ".", "");
+	redsea_read_files(root_directory, image, "");
 
 	return fuse_main(argc, argv, &redsea_ops, NULL);
 	
