@@ -156,6 +156,12 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 			break;				// end of directory
 		}
 		printf("0x%04x ", filetype);
+		// handle deleted files
+		if (filetype == 0x0910 || filetype == 0x0920 || filetype == 0x0d20) {
+			printf("DELETED FILE\n");
+			fseek(image, 62, SEEK_CUR);
+			continue;
+		}
 		if (filetype == 0x0810) printf("Directory ");
 		else if (filetype == 0x0820) printf("File ");
 		else if (filetype == 0x0c20) printf("Compressed File ");
