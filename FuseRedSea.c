@@ -1,4 +1,4 @@
-#define FUSE_USE_VERSION 34
+#define FUSE_USE_VERSION 29
 #define _FILE_OFFSET_BITS 64
 #define BLOCK_SIZE 512			// RedSea Block Size
 #define ISO_9660_SECTOR_SIZE 2048
