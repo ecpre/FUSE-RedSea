@@ -4,6 +4,8 @@
 #define ISO_9660_SECTOR_SIZE 2048
 #define UNIX_CDATE_SECONDS 62167132800 	// seconds to subtract from CDate seconds for unix time
 					// 719527*84000
+#define FUSE_CAP_HANDLE_KILLPRIV 0
+
 #include <fuse.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -54,14 +56,22 @@ FILE* image;			// image is going to be global. makes it easier
 unsigned long long int free_space_pointer = 0;				// just point to the next free available location to expand files
 									// really naive implementation but should work.
 
-//Converts templeOS CDate (Christ date?) format to unix time.
+//Converts TempleOS CDate (Christ date?) format to unix time.
 long long int cdate_to_unix(unsigned long long int cdate) {
 	unsigned int lower = cdate & 0xFFFFFFFF;
 	unsigned int upper = (cdate>>32) & 0xFFFFFFFF;
        	unsigned long long int cdate_upper_seconds = upper*86400LL;
 	long int cdate_lower_seconds = lower/49710;
-	unsigned long long int unix_seconds = cdate_upper_seconds+cdate_lower_seconds-UNIX_CDATE_SECONDS;
+	long long int unix_seconds = cdate_upper_seconds+cdate_lower_seconds-UNIX_CDATE_SECONDS;
 	return unix_seconds;
+}
+//Converts unix time to TempleOS CDate.
+unsigned long long int unix_to_cdate(long long int unix_time) {
+	unsigned long long int cdate;
+	unsigned int lower = (unix_time % 84000LL)*49710;
+	unsigned int upper = (unix_time + UNIX_CDATE_SECONDS) / 86400;
+	cdate = (unsigned long long int) upper << 32 | lower;
+	return cdate;
 }
 
 bool is_directory(const char* path) {
@@ -247,7 +257,7 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 		}
 		// set the free space pointer, eventually to the end of the image.
 		if ((file_block*BLOCK_SIZE + file_size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
-			free_space_pointer = (file_block*BLOCK_SIZE+file_size+BLOCK_SIZE)/BLOCK_SIZE+1;
+			free_space_pointer = (file_block*BLOCK_SIZE+file_size+BLOCK_SIZE-1)/BLOCK_SIZE+2;
 		}
 	}
 	directory->num_children = num_children;
@@ -267,7 +277,6 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 unsigned char* redsea_file_content(struct redsea_file* rs_file, size_t size, off_t offset) {
 	rewind(image);
 	unsigned char* content = malloc(size);
-	printf("%d\n", size);
 	fseek(image, (rs_file->block)*BLOCK_SIZE+offset, SEEK_SET);
 	fread(content, 1, size, image);
 	return content;
@@ -306,6 +315,63 @@ int redsea_remove_common(struct redsea_directory* parent, unsigned long long int
 
 	return 0;
 }
+
+void move_file_to_end(struct redsea_file* file) {
+	unsigned long long int new_block = free_space_pointer;
+	unsigned long long int old_block = file -> block;
+	unsigned long long int size = file -> size;
+	unsigned char* buf = malloc(size);
+	rewind(image);
+	fseek(image, old_block*BLOCK_SIZE, SEEK_SET);
+	fread(buf, 1, size, image);
+	fseek(image, new_block*BLOCK_SIZE, SEEK_SET);
+	fwrite(buf, 1, size, image);
+	file -> block = new_block;
+	rewind(image);
+	fseek(image, file->parent->block*BLOCK_SIZE + file->seek_to, SEEK_SET);
+	fseek(image, 40, SEEK_CUR);				// find block
+	unsigned char nb_char[8] = {new_block & 0xff, (new_block >> 8) & 0xff, (new_block >> 16) & 0xff, (new_block>>24) & 0xff,
+		(new_block>>32) & 0xff, (new_block >> 40) & 0xff, (new_block >> 48) & 0xff, (new_block >> 56) & 0xff};
+	fwrite(nb_char, 8, 1, image);
+	// should be always true?
+	if ((new_block*BLOCK_SIZE + size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
+			free_space_pointer = (new_block*BLOCK_SIZE+size+BLOCK_SIZE-1)/BLOCK_SIZE+2;
+	}	
+}
+
+void write_file(struct redsea_file* file, const char* buffer, size_t size, off_t offset) {
+	if ((((size + offset)-file->size) + file->block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE >
+			(file->block*BLOCK_SIZE + file->size + BLOCK_SIZE-1)/BLOCK_SIZE ) {
+		printf("MOVED TO END OF IMAGE !!! \n");
+		move_file_to_end(file);
+	}
+	else printf("NOT MOVED TO END OF IMAGE !!! \n");
+	printf("%#x %#x\n", (((size + offset)-file->size) + file->block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE, free_space_pointer);
+	unsigned long long int block = file -> block;
+	rewind(image);
+	fseek(image, block*BLOCK_SIZE, SEEK_SET);
+	fseek(image, offset, SEEK_CUR);
+	// pad last RS block
+	fwrite(buffer, size, 1, image);
+	file->size += (size+offset)-file->size;			// set file size
+	unsigned char size_char[8] = {file->size & 0xff, (file->size >> 8) & 0xff, (file->size >> 16) & 0xff, (file->size>>24) & 0xff,
+		(file->size>>32) & 0xff, (file->size >> 40) & 0xff, (file->size >> 48) & 0xff, (file->size >> 56) & 0xff};
+	rewind(image);
+	fseek(image, file->parent->block*BLOCK_SIZE, SEEK_SET);
+	fseek(image, file->seek_to+48, SEEK_CUR);
+	fwrite(size_char, 8, 1, image);
+	fseek(image, 0, SEEK_END);
+
+	if ((block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
+		free_space_pointer = (block*BLOCK_SIZE+file->size-BLOCK_SIZE-1)/BLOCK_SIZE+1;
+	}
+	if (free_space_pointer*BLOCK_SIZE > ftell(image)) {
+		unsigned char* buf = calloc(free_space_pointer*BLOCK_SIZE-ftell(image), 1);
+		printf("FSP diff: %d\n", free_space_pointer*BLOCK_SIZE-ftell(image), image);
+		fwrite(buf, 1, free_space_pointer*BLOCK_SIZE-ftell(image), image);
+	}
+
+}	
 
 /*
  * Function for use in both unlink and rmdir
@@ -361,7 +427,7 @@ static int fuse_rs_read_file(const char *path, char *buffer, size_t size, off_t 
 static int fuse_rs_unlink_file(const char* path) {
 	unsigned long long int fid = file_position(path);
 	if (fid == -1) {
-		if (file_position(path) != 0) errno = EISDIR;
+		if (directory_position(path) != 0) errno = EISDIR;
 		return -1;
 	}
 	struct redsea_file* file = file_structs[fid];
@@ -402,15 +468,44 @@ static int fuse_rs_open_dir(const char* path, struct fuse_file_info* fi) {
 	return 0;
 }
 
+static int fuse_rs_write(const char* path, const char* buffer, size_t size, off_t offset, struct fuse_file_info* fi) {
+	unsigned long long int fid = file_position(path);
+	if (fid == -1) return -1;
+	write_file(file_structs[fid], buffer, size, offset);
+	return size;
+}
+
+static int fuse_rs_truncate(const char* path, off_t offset) {
+	/*
+	unsigned long long int fid = file_position(path);
+	if (fid == -1) return -1;
+	rewind(image);
+	struct redsea_file* file = file_structs[fid];
+	fseek(image, file->parent->block*BLOCK_SIZE, SEEK_SET);
+	fseek(image, file->seek_to+48, SEEK_CUR);
+	unsigned char nb_char[8] = {offset & 0xff, (offset >> 8) & 0xff, (offset >> 16) & 0xff, (offset >> 24) & 0xff,
+		(offset >> 32) & 0xff, (offset >> 40) & 0xff, (offset >> 48) & 0xff, (offset >> 56) & 0xff};
+	fwrite(nb_char, 8, 1, image);
+	file->size = offset;
+	printf("NSIZE: %#x\n", file->size);
+	return offset;
+	*/
+
+	// we are just going to ignore truncate ;)
+	return offset;
+}
+
 static struct fuse_operations redsea_ops = {
 	.getattr = fuse_rs_file_attributes,
 	.readdir = fuse_rs_read_directory,
-	.read = fuse_rs_read_file,					// all I have implemented now. write access soon. maybe
+	.read = fuse_rs_read_file,					
 	.unlink = fuse_rs_unlink_file,
 	.rmdir = fuse_rs_rmdir,
-	.open = fuse_rs_open_file,
-	.opendir = fuse_rs_open_dir,					// open and opendir should just return 0 afaik. no need
-									// for stuff like that in RedSea
+	.write = fuse_rs_write,
+	.truncate = fuse_rs_truncate,
+	.open = fuse_rs_open_file,				// open and opendir should just return 0 afaik. no need
+	.opendir = fuse_rs_open_dir,				// for stuff like that in RedSea
+	
 };
 
 char *devfile = NULL;
