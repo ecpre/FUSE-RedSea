@@ -10,6 +10,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <errno.h>
 
 /* RedSea FUSE driver
  * for the TempleOS RedSea filesystem
@@ -49,6 +51,8 @@ struct redsea_file** file_structs;
 int directory_count = 1;
 int file_count = 0;
 FILE* image;			// image is going to be global. makes it easier
+unsigned long long int free_space_pointer = 0;				// just point to the next free available location to expand files
+									// really naive implementation but should work.
 
 //Converts templeOS CDate (Christ date?) format to unix time.
 long long int cdate_to_unix(unsigned long long int cdate) {
@@ -82,13 +86,13 @@ unsigned long long int file_position(const char* path) {
 }
 
 // double directory array
-void expand_directories() {
+void expand_directory_array() {
 	max_directory_count *= 2;
 	directory_paths = realloc(directory_paths, sizeof(char*)*max_directory_count);
 	directory_structs = realloc(directory_structs, sizeof(struct redsea_directory*)*max_directory_count);
 }
 // double file array
-void expand_files() {
+void expand_file_array() {
 	max_file_count *= 2;
 	file_paths = realloc(file_paths, sizeof(char*)*max_file_count);
 	file_structs = realloc(file_structs, sizeof(struct redsea_file*)*max_file_count);
@@ -199,7 +203,7 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 
 				// global directory array
 				if (directory_count+1 >= max_directory_count) {
-					expand_directories();
+					expand_directory_array();
 				}
 				directory_paths[directory_count] = malloc(strlen(path));
 				strcpy(directory_paths[directory_count], path);	
@@ -220,7 +224,7 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 		}
 		else {
 			if (file_count+1 >= max_file_count) {
-				expand_files();
+				expand_file_array();
 			}
 			file_paths[file_count] = malloc(strlen(path)+1);
 			strcpy(file_paths[file_count], path);
@@ -240,6 +244,10 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 			directory -> children[num_children] = malloc(sizeof(char)*strlen(name)+1);
 			strcpy(directory -> children[num_children], name);
 			num_children++;
+		}
+		// set the free space pointer, eventually to the end of the image.
+		if ((file_block*BLOCK_SIZE + file_size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
+			free_space_pointer = (file_block*BLOCK_SIZE+file_size+BLOCK_SIZE)/BLOCK_SIZE+1;
 		}
 	}
 	directory->num_children = num_children;
@@ -264,6 +272,44 @@ unsigned char* redsea_file_content(struct redsea_file* rs_file, size_t size, off
 	fread(content, 1, size, image);
 	return content;
 }
+
+int redsea_remove_common(struct redsea_directory* parent, unsigned long long int seek_to, unsigned char* name) {
+
+	unsigned long long int loc = -1;			//file loc in parent->children
+	for (int i = 0; i<parent->num_children; i++) {
+		if (strcmp(parent->children[i], name) == 0) {
+			loc = i;
+			break;
+		}
+	}
+	if (loc == -1) return -1;
+	
+	// remove file from parent children list.
+	// I could also remove it from the global file list but there's no
+	// real need to other than for memory concerns. (so I probably should)
+	for (unsigned long long int i = loc; i<parent->num_children; i++) {
+		parent->children[i]=parent->children[i+1];
+	}
+	parent->num_children--;
+
+	rewind(image);
+	fseek(image, (parent->block*BLOCK_SIZE), SEEK_SET);
+	uint16_t filetype;
+	fseek(image, seek_to, SEEK_CUR);
+	fread(&filetype, 2, 1, image);
+	fseek(image, -2, SEEK_CUR);
+	filetype += 0x100;					// mark file as deleted
+	unsigned char buf[2];
+	buf[0] = filetype & 0xff;
+	buf[1] = (filetype >> 8) & 0xff;
+	fwrite(buf, 2, 1, image);
+
+	return 0;
+}
+
+/*
+ * Function for use in both unlink and rmdir
+ */
 
 static int fuse_rs_file_attributes(const char *path, struct stat *st) {
 	if (strcmp(path, "/") == 0 || is_directory(path)) {
@@ -314,40 +360,45 @@ static int fuse_rs_read_file(const char *path, char *buffer, size_t size, off_t 
 
 static int fuse_rs_unlink_file(const char* path) {
 	unsigned long long int fid = file_position(path);
-	if (fid == -1) return -1;
+	if (fid == -1) {
+		if (file_position(path) != 0) errno = EISDIR;
+		return -1;
+	}
 	struct redsea_file* file = file_structs[fid];
 	unsigned char* name = file -> name;
 	struct redsea_directory* parent = file -> parent;
-	
-	unsigned long long int loc = -1;			//file loc in parent->children
-	for (int i = 0; i<parent->num_children; i++) {
-		if (strcmp(parent->children[i], name) == 0) {
-			loc = i;
-			break;
-		}
+	unsigned long long int seek_to = file -> seek_to;	
+	return redsea_remove_common(parent, seek_to, name);
+}
+/* Delete directory:
+ * I am pretty sure this deletion is incomplete according to
+ * the RedSea specifications as "." and ".." are never marked
+ * as deleted. TempleOS still recognizes it though, so it
+ * should be fine.
+ */
+static int fuse_rs_rmdir(const char* path) {
+	unsigned long long int did = directory_position(path);
+	if (did == -1) {
+		errno = ENOTDIR;
+		return -1;
 	}
-	if (loc == -1) return -1;
-	
-	// remove file from parent children list.
-	// I could also remove it from the global file list but there's no
-	// real need to other than for memory concerns. (so I probably should)
-	for (unsigned long long int i = loc; i<parent->num_children; i++) {
-		parent->children[i]=parent->children[i+1];
+	struct redsea_directory* directory = directory_structs[did];
+	if (directory->num_children != 0) {
+		errno = ENOTEMPTY;
+		return -1;
 	}
-	parent->num_children--;
+	unsigned char* name = directory -> name;
+	struct redsea_directory* parent = directory -> parent;
+	unsigned long long int seek_to = directory -> seek_to;
+	return redsea_remove_common(parent, seek_to, name);
+}
 
-	rewind(image);
-	fseek(image, (parent->block*BLOCK_SIZE), SEEK_SET);
-	uint16_t filetype;
-	fseek(image, file->seek_to, SEEK_CUR);
-	fread(&filetype, 2, 1, image);
-	fseek(image, -2, SEEK_CUR);
-	filetype += 0x100;					// mark file as deleted
-	unsigned char buf[2];
-	buf[0] = filetype & 0xff;
-	buf[1] = (filetype >> 8) & 0xff;
-	fwrite(buf, 2, 1, image);
+// Both of the below functions just return 0. Unneccesary for redsea
+static int fuse_rs_open_file(const char* path, struct fuse_file_info* fi) {
+	return 0;
+}
 
+static int fuse_rs_open_dir(const char* path, struct fuse_file_info* fi) {
 	return 0;
 }
 
@@ -355,7 +406,11 @@ static struct fuse_operations redsea_ops = {
 	.getattr = fuse_rs_file_attributes,
 	.readdir = fuse_rs_read_directory,
 	.read = fuse_rs_read_file,					// all I have implemented now. write access soon. maybe
-	.unlink = fuse_rs_unlink_file
+	.unlink = fuse_rs_unlink_file,
+	.rmdir = fuse_rs_rmdir,
+	.open = fuse_rs_open_file,
+	.opendir = fuse_rs_open_dir,					// open and opendir should just return 0 afaik. no need
+									// for stuff like that in RedSea
 };
 
 char *devfile = NULL;
@@ -394,6 +449,8 @@ int main(int argc, char **argv) {
 		root_directory->parent = NULL;
 		directory_paths[0] = "/";
 		directory_structs[0] = root_directory;
+
+		free_space_pointer = rdb;
 
 		//redsea_read_files(rdb, size, image, ".", "");
 		redsea_read_files(root_directory, "");
