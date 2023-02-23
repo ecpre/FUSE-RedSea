@@ -335,7 +335,7 @@ void move_file_to_end(struct redsea_file* file) {
 	fwrite(nb_char, 8, 1, image);
 	// should be always true?
 	if ((new_block*BLOCK_SIZE + size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
-			free_space_pointer = (new_block*BLOCK_SIZE+size+BLOCK_SIZE-1)/BLOCK_SIZE+2;
+			free_space_pointer = (new_block*BLOCK_SIZE+size+BLOCK_SIZE-1)/BLOCK_SIZE+1;
 	}	
 }
 
@@ -365,11 +365,13 @@ void write_file(struct redsea_file* file, const char* buffer, size_t size, off_t
 	if ((block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
 		free_space_pointer = (block*BLOCK_SIZE+file->size-BLOCK_SIZE-1)/BLOCK_SIZE+1;
 	}
-	if (free_space_pointer*BLOCK_SIZE > ftell(image)) {
+	/*if (free_space_pointer*BLOCK_SIZE > ftell(image)) {
 		unsigned char* buf = calloc(free_space_pointer*BLOCK_SIZE-ftell(image), 1);
 		printf("FSP diff: %d\n", free_space_pointer*BLOCK_SIZE-ftell(image), image);
 		fwrite(buf, 1, free_space_pointer*BLOCK_SIZE-ftell(image), image);
+		free(buf);
 	}
+	*/
 
 }	
 
@@ -495,6 +497,17 @@ static int fuse_rs_truncate(const char* path, off_t offset) {
 	return offset;
 }
 
+static void fuse_rs_destroy() {
+	rewind(image);
+	fseek(image, 0, SEEK_END);
+	int padding = ftell(image)%2048;
+	printf("END PADDING: %#x \n", padding);
+	if (padding != 0) {
+		unsigned char* buf = calloc(padding, 1);
+		fwrite(buf, 1, padding, image);
+	}
+}
+
 static struct fuse_operations redsea_ops = {
 	.getattr = fuse_rs_file_attributes,
 	.readdir = fuse_rs_read_directory,
@@ -505,6 +518,7 @@ static struct fuse_operations redsea_ops = {
 	.truncate = fuse_rs_truncate,
 	.open = fuse_rs_open_file,				// open and opendir should just return 0 afaik. no need
 	.opendir = fuse_rs_open_dir,				// for stuff like that in RedSea
+	.destroy = fuse_rs_destroy,
 	
 };
 
