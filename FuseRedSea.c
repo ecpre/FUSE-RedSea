@@ -17,18 +17,22 @@
  */
 
 struct redsea_file {
-	unsigned char name[39]; // file names can be 38 chars
+	unsigned long long int seek_to;		// seek to here from parent block to get entry
+	unsigned char name[39]; 		// file names can be 38 chars
 	unsigned long long int size;
 	unsigned long long int block;
 	unsigned long long int mod_date;
+	struct redsea_directory* parent;
 };
 struct redsea_directory {
+	unsigned long long int seek_to;		// seek to here from parent block to get entry
 	unsigned char name[39];
 	unsigned long long int size;
 	unsigned long long int block;
 	unsigned long long int mod_date;
 	unsigned long long int num_children;
 	unsigned char** children;
+	struct redsea_directory* parent;
 	
 };
 
@@ -150,21 +154,21 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 	unsigned char subdirectory_paths[size/64][512];
 	unsigned char path[strlen(path_so_far)+40];
 	fseek(image, (block*BLOCK_SIZE), SEEK_SET);
-	for ( ;; ) {
+	for (int i = 0; i < size/64; i++ ) {
 		fread(&filetype, 2, 1, image);
 		if (filetype == 0) {
 			break;				// end of directory
 		}
 		printf("0x%04x ", filetype);
 		// handle deleted files
-		if (filetype == 0x0910 || filetype == 0x0920 || filetype == 0x0d20) {
+		if (filetype == 0x0910 || filetype == 0x0920 || filetype == 0x0d20 || filetype == 0x0d00 || filetype == 0x0900) {
 			printf("DELETED FILE\n");
 			fseek(image, 62, SEEK_CUR);
 			continue;
 		}
 		if (filetype == 0x0810) printf("Directory ");
-		else if (filetype == 0x0820) printf("File ");
-		else if (filetype == 0x0c20) printf("Compressed File ");
+		else if (filetype == 0x0820 || filetype == 0x0800) printf("File ");
+		else if (filetype == 0x0c20 || filetype == 0x0c00) printf("Compressed File ");
 		for (int i = 0; i < 38; i++) {
 			unsigned char current;
 			fread(&current, 1, 1, image);
@@ -201,11 +205,13 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 				strcpy(directory_paths[directory_count], path);	
 				struct redsea_directory* directory_entry = malloc(sizeof(struct redsea_directory));
 				strcpy(directory_entry->name, name);
+				directory_entry -> seek_to = i*64;
 				directory_entry -> size = file_size;
 				directory_entry -> block = file_block;
 				directory_entry -> mod_date = timestamp;
 				directory_entry -> children = malloc(sizeof(char*)*(file_size/64));
 				directory_entry -> num_children = 0;
+				directory_entry -> parent = directory;
 				directory_structs[directory_count] = directory_entry;
 				subdirectories[subdirec] = directory_entry;
 				
@@ -220,10 +226,12 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 			strcpy(file_paths[file_count], path);
 			// create file entry struct after inserting path
 			struct redsea_file* file_entry = malloc(sizeof(struct redsea_file));
-			strcpy(file_entry->name, name);	
+			strcpy(file_entry->name, name);
+			file_entry -> seek_to = i*64;
 			file_entry -> size = file_size;
 			file_entry -> block = file_block;
 			file_entry -> mod_date = timestamp;
+			file_entry -> parent = directory;
 			file_structs[file_count] = file_entry;
 
 			file_count++;
@@ -304,10 +312,50 @@ static int fuse_rs_read_file(const char *path, char *buffer, size_t size, off_t 
 	return size;	
 }
 
+static int fuse_rs_unlink_file(const char* path) {
+	unsigned long long int fid = file_position(path);
+	if (fid == -1) return -1;
+	struct redsea_file* file = file_structs[fid];
+	unsigned char* name = file -> name;
+	struct redsea_directory* parent = file -> parent;
+	
+	unsigned long long int loc = -1;			//file loc in parent->children
+	for (int i = 0; i<parent->num_children; i++) {
+		if (strcmp(parent->children[i], name) == 0) {
+			loc = i;
+			break;
+		}
+	}
+	if (loc == -1) return -1;
+	
+	// remove file from parent children list.
+	// I could also remove it from the global file list but there's no
+	// real need to other than for memory concerns. (so I probably should)
+	for (unsigned long long int i = loc; i<parent->num_children; i++) {
+		parent->children[i]=parent->children[i+1];
+	}
+	parent->num_children--;
+
+	rewind(image);
+	fseek(image, (parent->block*BLOCK_SIZE), SEEK_SET);
+	uint16_t filetype;
+	fseek(image, file->seek_to, SEEK_CUR);
+	fread(&filetype, 2, 1, image);
+	fseek(image, -2, SEEK_CUR);
+	filetype += 0x100;					// mark file as deleted
+	unsigned char buf[2];
+	buf[0] = filetype & 0xff;
+	buf[1] = (filetype >> 8) & 0xff;
+	fwrite(buf, 2, 1, image);
+
+	return 0;
+}
+
 static struct fuse_operations redsea_ops = {
 	.getattr = fuse_rs_file_attributes,
 	.readdir = fuse_rs_read_directory,
-	.read = fuse_rs_read_file			// all I have implemented now. write access soon. maybe
+	.read = fuse_rs_read_file,					// all I have implemented now. write access soon. maybe
+	.unlink = fuse_rs_unlink_file
 };
 
 char *devfile = NULL;
@@ -325,7 +373,7 @@ int main(int argc, char **argv) {
 		memcpy(&argv[i], &argv[i+1], (argc-i) * sizeof(argv[0]));
 		argc--;
 	
-		image = fopen(devfile, "rb");				// open disk image
+		image = fopen(devfile, "rb+");				// open disk image
 		unsigned int bcp = boot_catalog_pointer(image);
 		if (redsea_identity_check(bcp, image)) printf("good\n");
 		else printf("bad. not redsea?\n");
@@ -337,11 +385,13 @@ int main(int argc, char **argv) {
 		printf("size: %#lx\n", size);
 		struct redsea_directory* root_directory = malloc(sizeof(struct redsea_directory));
 		strcpy(root_directory->name, ".");
+		root_directory->seek_to = 0;
 		root_directory->size = size;
 		root_directory->block = rdb;
 		root_directory->mod_date = 0;
 		root_directory->num_children = 0;
 		root_directory->children = malloc(sizeof(char*)*(size/64));
+		root_directory->parent = NULL;
 		directory_paths[0] = "/";
 		directory_structs[0] = root_directory;
 
