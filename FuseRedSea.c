@@ -175,6 +175,8 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 		}
 		printf("0x%04x ", filetype);
 		// handle deleted files
+		// this implementation is INCORRECT and will not work with all potential filetypes. I need to fix that
+		// these are attribute flags!
 		if (filetype == 0x0910 || filetype == 0x0920 || filetype == 0x0d20 || filetype == 0x0d00 || filetype == 0x0900) {
 			printf("DELETED FILE\n");
 			fseek(image, 62, SEEK_CUR);
@@ -334,6 +336,55 @@ void move_file_to_end(struct redsea_file* file) {
 		(new_block>>32) & 0xff, (new_block >> 40) & 0xff, (new_block >> 48) & 0xff, (new_block >> 56) & 0xff};
 	fwrite(nb_char, 8, 1, image);
 	// should be always true?
+	if ((new_block*BLOCK_SIZE + size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
+			free_space_pointer = (new_block*BLOCK_SIZE+size+BLOCK_SIZE-1)/BLOCK_SIZE+1;
+	}	
+}
+
+// could probably merge a lot of this functions functionality with the above function
+// without too many issues
+
+void move_directory_to_end(struct redsea_directory* directory) {
+	unsigned long long int new_block = free_space_pointer;
+	unsigned long long int old_block = directory -> block;
+	unsigned long long int size = directory -> size;
+	unsigned char* buf = malloc(size);
+	rewind(image);
+	fseek(image, old_block*BLOCK_SIZE, SEEK_SET);
+	fread(buf, 1, size, image);
+	fseek(image, new_block*BLOCK_SIZE, SEEK_SET);
+	fwrite(buf, 1, size, image);
+	directory -> block = new_block;
+	rewind(image);
+	fseek(image, directory->parent->block*BLOCK_SIZE + directory->seek_to, SEEK_SET);
+	fseek(image, 40, SEEK_CUR);				// find block
+	unsigned char nb_char[8] = {new_block & 0xff, (new_block >> 8) & 0xff, (new_block >> 16) & 0xff, (new_block>>24) & 0xff,
+		(new_block>>32) & 0xff, (new_block >> 40) & 0xff, (new_block >> 48) & 0xff, (new_block >> 56) & 0xff};
+	fwrite(nb_char, 8, 1, image);
+
+	rewind(image); // SEEK_SET just set the pointer. I don't know why I use
+		       // rewind so much.
+	fseek(image, new_block*BLOCK_SIZE, SEEK_SET);
+       	fseek(image, 40, SEEK_CUR);
+	fwrite(nb_char, 8, 1, image);
+	for (int i = 0; i < directory -> num_children; i++) {
+		rewind(image);
+		fseek(image, directory->block*BLOCK_SIZE, SEEK_SET);
+		uint16_t filetype;
+		fseek(image, 128 + i*64, SEEK_CUR);
+		fread(&filetype, 2, 1, image);
+		if ((filetype >> 5) & 1 == 1) {		// If file is a directory
+			fseek(image, 38, SEEK_CUR);
+			unsigned long long int subdir_block;
+			fread(&subdir_block, 8, 1, image);
+			rewind(image);
+			fseek(image, subdir_block*BLOCK_SIZE, SEEK_SET);
+			fseek(image, 104, SEEK_CUR);
+			fwrite(nb_char, 8, 1, image);
+		}
+
+	}
+	// should be always true? 
 	if ((new_block*BLOCK_SIZE + size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
 			free_space_pointer = (new_block*BLOCK_SIZE+size+BLOCK_SIZE-1)/BLOCK_SIZE+1;
 	}	
