@@ -22,7 +22,7 @@
 
 struct redsea_file {
 	unsigned long long int seek_to;		// seek to here from parent block to get entry
-	unsigned char name[39]; 		// file names can be 38 chars
+	unsigned char name[38]; 		// file names can be 37 chars + null
 	unsigned long long int size;
 	unsigned long long int block;
 	unsigned long long int mod_date;
@@ -30,7 +30,7 @@ struct redsea_file {
 };
 struct redsea_directory {
 	unsigned long long int seek_to;		// seek to here from parent block to get entry
-	unsigned char name[39];
+	unsigned char name[38];
 	unsigned long long int size;
 	unsigned long long int block;
 	unsigned long long int mod_date;
@@ -159,7 +159,7 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 
 	//strcat(path_so_far, "/");
 	uint16_t filetype = 0;		// 0x0810 for directories, 0x0820 for files, 0x0c20 for compressed files
-	unsigned char name[39];
+	unsigned char name[38];
 	unsigned long long int file_block;
 	unsigned long long int file_size;
 	unsigned long long int timestamp;
@@ -340,8 +340,9 @@ void move_file_to_end(struct redsea_file* file) {
 }
 
 void write_file(struct redsea_file* file, const char* buffer, size_t size, off_t offset) {
-	if ((((size + offset)-file->size) + file->block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE >
-			(file->block*BLOCK_SIZE + file->size + BLOCK_SIZE-1)/BLOCK_SIZE ) {
+	unsigned long long int end_after = (((size+offset)-file->size) + file->block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE;
+	unsigned long long int end_before = (file->size + file->block*BLOCK_SIZE + BLOCK_SIZE-1) / BLOCK_SIZE;
+	if (end_after > end_before && (end_before < free_space_pointer-1)) {
 		printf("MOVED TO END OF IMAGE !!! \n");
 		move_file_to_end(file);
 	}
@@ -364,16 +365,39 @@ void write_file(struct redsea_file* file, const char* buffer, size_t size, off_t
 
 	if ((block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
 		free_space_pointer = (block*BLOCK_SIZE+file->size-BLOCK_SIZE-1)/BLOCK_SIZE+1;
-	}
-	/*if (free_space_pointer*BLOCK_SIZE > ftell(image)) {
-		unsigned char* buf = calloc(free_space_pointer*BLOCK_SIZE-ftell(image), 1);
-		printf("FSP diff: %d\n", free_space_pointer*BLOCK_SIZE-ftell(image), image);
-		fwrite(buf, 1, free_space_pointer*BLOCK_SIZE-ftell(image), image);
-		free(buf);
-	}
-	*/
+	}	
 
-}	
+}
+
+/*Rewrite the redsea boot area.
+ *Called upon filesystem destruction
+ */
+
+void rewrite_redsea_boot() {
+	fseek(image, 0, SEEK_END);
+	unsigned long long int end = ftell(image);
+	unsigned int end_sector = end / ISO_9660_SECTOR_SIZE;			// this number is only 32 bit which puts a
+										// limitation on ISO.C files with redsea, which can
+										// theoretically support much larger filesystems.
+										// You should never have a redsea fs that large though.
+										// That's not what RedSea is for
+	unsigned long long int end_block = end / BLOCK_SIZE - 0x58;		// minus 0x58 for start block
+	printf("EOF SECTOR: %#x\n", end);
+	
+	// ISO 9660 is both little AND big endian 
+	unsigned char ISO_9660_buffer[8] = {end_sector & 0xff, (end_sector >> 8) & 0xff, (end_sector >> 16) & 0xff, 
+		(end_sector >> 24) & 0xff, (end_sector >> 24) & 0xff, (end_sector >> 16) & 0xff, (end_sector >> 8) & 0xff, end_sector & 0xff};
+	rewind(image);
+	fseek(image, 0x8050, SEEK_SET);
+	fwrite(ISO_9660_buffer, 8, 1, image);
+	fseek(image, 0xff8, SEEK_CUR);		// to 0x9050
+	fwrite(ISO_9660_buffer, 8, 1, image);
+	unsigned char rs_buffer[8] = {end_block & 0xff, (end_block >> 8) & 0xff, (end_block >> 16) & 0xff, 
+		(end_block >> 24) & 0xff, (end_block >> 32) & 0xff, (end_block >> 40) & 0xff, (end_block >> 48) & 0xff, (end_block >> 56) & 0xff};
+	fseek(image, 0x1fa8, SEEK_CUR);		// to 0xB000
+	fseek(image, 16, SEEK_CUR);
+	fwrite(rs_buffer, 8, 1, image);
+}
 
 /*
  * Function for use in both unlink and rmdir
@@ -477,21 +501,7 @@ static int fuse_rs_write(const char* path, const char* buffer, size_t size, off_
 	return size;
 }
 
-static int fuse_rs_truncate(const char* path, off_t offset) {
-	/*
-	unsigned long long int fid = file_position(path);
-	if (fid == -1) return -1;
-	rewind(image);
-	struct redsea_file* file = file_structs[fid];
-	fseek(image, file->parent->block*BLOCK_SIZE, SEEK_SET);
-	fseek(image, file->seek_to+48, SEEK_CUR);
-	unsigned char nb_char[8] = {offset & 0xff, (offset >> 8) & 0xff, (offset >> 16) & 0xff, (offset >> 24) & 0xff,
-		(offset >> 32) & 0xff, (offset >> 40) & 0xff, (offset >> 48) & 0xff, (offset >> 56) & 0xff};
-	fwrite(nb_char, 8, 1, image);
-	file->size = offset;
-	printf("NSIZE: %#x\n", file->size);
-	return offset;
-	*/
+static int fuse_rs_truncate(const char* path, off_t offset) {	
 
 	// we are just going to ignore truncate ;)
 	return offset;
@@ -500,12 +510,13 @@ static int fuse_rs_truncate(const char* path, off_t offset) {
 static void fuse_rs_destroy() {
 	rewind(image);
 	fseek(image, 0, SEEK_END);
-	int padding = ftell(image)%2048;
+	int padding = 2048-ftell(image)%2048;
 	printf("END PADDING: %#x \n", padding);
-	if (padding != 0) {
+	if (padding != 2048 && padding != 0) {
 		unsigned char* buf = calloc(padding, 1);
 		fwrite(buf, 1, padding, image);
 	}
+	rewrite_redsea_boot();
 }
 
 static struct fuse_operations redsea_ops = {
