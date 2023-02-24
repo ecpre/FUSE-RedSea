@@ -497,6 +497,7 @@ static int fuse_rs_read_file(const char *path, char *buffer, size_t size, off_t 
 
 	file_contents = redsea_file_content(file_structs[fid], size, offset);
 	memcpy(buffer, file_contents, size);
+	free(file_contents);
 
 	return size;	
 }
