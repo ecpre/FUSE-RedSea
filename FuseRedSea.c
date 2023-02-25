@@ -4,7 +4,6 @@
 #define ISO_9660_SECTOR_SIZE 2048
 #define UNIX_CDATE_SECONDS 62167132800 	// seconds to subtract from CDate seconds for unix time
 					// 719527*84000
-#define FUSE_CAP_HANDLE_KILLPRIV 0
 
 #include <fuse.h>
 #include <stdlib.h>
@@ -14,6 +13,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <errno.h>
+#include <time.h>
 
 /* RedSea FUSE driver
  * for the TempleOS RedSea filesystem
@@ -258,8 +258,13 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 			num_children++;
 		}
 		// set the free space pointer, eventually to the end of the image.
-		if ((file_block*BLOCK_SIZE + file_size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
-			free_space_pointer = (file_block*BLOCK_SIZE+file_size+BLOCK_SIZE-1)/BLOCK_SIZE+2;
+		if (file_block != 0xFFFFFFFFFFFFFFFF) {					// templeos puts empty files at 0xFFFFFFFFFFFFFFFF
+											// but nothing actually gets created there
+											// (it would be rather difficult to find a 
+											// 16 EiB disk anways)
+			if ((file_block*BLOCK_SIZE + file_size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
+				free_space_pointer = (file_block*BLOCK_SIZE+file_size+BLOCK_SIZE-1)/BLOCK_SIZE+2;
+			}
 		}
 	}
 	directory->num_children = num_children;
@@ -355,6 +360,17 @@ void move_directory_to_end(struct redsea_directory* directory) {
 	fseek(image, new_block*BLOCK_SIZE, SEEK_SET);
 	fwrite(buf, 1, size, image);
 	directory -> block = new_block;
+	free(buf);
+
+	unsigned char* blank = calloc(BLOCK_SIZE, 1);
+	fwrite(blank, BLOCK_SIZE, 1, image);
+	free(blank);
+
+	// add more space for directory
+	size += BLOCK_SIZE;
+	directory->size = size;
+	directory->children = realloc(directory, sizeof(char*)*size/64);
+
 	rewind(image);
 	fseek(image, directory->parent->block*BLOCK_SIZE + directory->seek_to, SEEK_SET);
 	fseek(image, 40, SEEK_CUR);				// find block
@@ -384,6 +400,24 @@ void move_directory_to_end(struct redsea_directory* directory) {
 		}
 
 	}
+
+	/*Root directory pointer also seems to follow both endian. poses a problem for resizing
+	 *root directory past block 0xFFFFFFFF 
+	 */
+	unsigned char rdb_char[8] = {nb_char[0], nb_char[1], nb_char[2], nb_char[3], nb_char[3], nb_char[2], nb_char[1], nb_char[0]};
+	if (strcmp(directory->name, ".") == 0) {
+		rewind(image);
+		fseek(image, 0x8098, SEEK_SET);
+		fwrite(rdb_char, 8, 1, image);
+		fseek(image, 0x1000, SEEK_CUR);
+		fwrite(rdb_char, 8, 1, image);
+		fseek(image, 0x1f78, SEEK_CUR);
+		fwrite(nb_char, 8, 1, image);
+		rewind(image);
+		fseek(image, new_block*BLOCK_SIZE, SEEK_SET);
+		fseek(image, 104, SEEK_CUR);
+		fwrite(nb_char, 8, 1, image);
+	}
 	// should be always true? 
 	if ((new_block*BLOCK_SIZE + size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
 			free_space_pointer = (new_block*BLOCK_SIZE+size+BLOCK_SIZE-1)/BLOCK_SIZE+1;
@@ -405,7 +439,9 @@ void write_file(struct redsea_file* file, const char* buffer, size_t size, off_t
 	fseek(image, offset, SEEK_CUR);
 	// pad last RS block
 	fwrite(buffer, size, 1, image);
-	file->size += (size+offset)-file->size;			// set file size
+	if ((size+offset) > file->size) {
+		file->size += (size+offset)-file->size;			// set file size
+	}
 	unsigned char size_char[8] = {file->size & 0xff, (file->size >> 8) & 0xff, (file->size >> 16) & 0xff, (file->size>>24) & 0xff,
 		(file->size>>32) & 0xff, (file->size >> 40) & 0xff, (file->size >> 48) & 0xff, (file->size >> 56) & 0xff};
 	rewind(image);
@@ -450,9 +486,48 @@ void rewrite_redsea_boot() {
 	fwrite(rs_buffer, 8, 1, image);
 }
 
-/*
- * Function for use in both unlink and rmdir
- */
+unsigned long long int find_free_dir_entry(struct redsea_directory* directory) {
+	unsigned long long int free_pos = directory->block*BLOCK_SIZE;
+	rewind(image);
+	fseek(image, free_pos, SEEK_SET);
+	fseek(image, 128, SEEK_CUR);
+	for (int i = 0; i < directory->num_children; i++) {
+		uint16_t filetype;
+		fread(&filetype, 2, 1, image);
+		if ((filetype >> 9) & 1 == 1) {			// if file is deleted it is free
+			fseek(image, -2, SEEK_CUR);
+			break;
+		}
+		fseek(image, 62, SEEK_CUR);
+	}
+	free_pos = ftell(image);
+	return free_pos;
+}
+
+unsigned long long int add_entry_to_dir(struct redsea_directory* directory, uint16_t attributes, unsigned char* name, unsigned long long int block, unsigned long long int size, unsigned long long int timestamp) {
+	unsigned long long int next_free = find_free_dir_entry(directory);
+
+	// I should really just write a function to do this work for me..	
+	unsigned char att_buf[2] = {attributes & 0xff, (attributes >> 8) & 0xff};
+	unsigned char block_buf[8] = {block & 0xff, (block >> 8) & 0xff, (block >> 16) & 0xff, (block >> 24) & 0xff, (block >> 32) & 0xff, (block >> 40) & 0xff,
+		(block >> 48) & 0xff, (block >> 56) & 0xff};
+	unsigned char size_buf[8] = {size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >> 24) & 0xff, (size >> 32) & 0xff, (size >> 40) & 0xff,
+		(size >> 48) & 0xff, (size  >> 56) & 0xff};
+	unsigned char timestamp_buf[8] = {timestamp & 0xff, (timestamp >> 8) & 0xff, (timestamp >> 16) & 0xff, (timestamp >> 24) & 0xff, (timestamp >> 32) & 0xff, (timestamp >> 40) & 0xff,
+		(timestamp >> 48) & 0xff, (timestamp >> 56) & 0xff};
+	rewind(image);
+	fseek(image, next_free, SEEK_SET);
+	fwrite(att_buf, 2, 1, image);
+	unsigned char* name_buf = calloc(38, 1);
+	strcpy(name_buf, name);
+	fwrite(name_buf, 38, 1, image);
+	fwrite(block_buf, 8, 1, image);
+	fwrite(size_buf, 8, 1, image);
+	fwrite(timestamp_buf, 8, 1, image);
+
+	return next_free - directory->block*BLOCK_SIZE;
+
+}
 
 static int fuse_rs_file_attributes(const char *path, struct stat *st) {
 	if (strcmp(path, "/") == 0 || is_directory(path)) {
@@ -466,11 +541,16 @@ static int fuse_rs_file_attributes(const char *path, struct stat *st) {
 	}
 	else {
 		unsigned long long int fid = file_position(path);			// fid is File ID
-		if (fid == -1) return -1;
-		st->st_size = file_structs[fid]->size;
-		st->st_mtime = cdate_to_unix(file_structs[fid]->mod_date);
-		st-> st_mode = S_IFREG | 0644;
-		st-> st_nlink = 2;
+		if (fid == -1) {
+			errno = EBADF;
+			return 0;		
+		}
+		else {
+			st->st_size = file_structs[fid]->size;
+			st->st_mtime = cdate_to_unix(file_structs[fid]->mod_date);
+			st-> st_mode = S_IFREG | 0644;
+			st-> st_nlink = 2;
+		}
 	}
 	//st->st_size = 512;
 	st->st_uid = getuid();
@@ -487,6 +567,7 @@ static int fuse_rs_read_directory(const char *path, void *buffer, fuse_fill_dir_
 	for (int j = 0; j<num_children; j++) {
 		filler(buffer, directory_structs[did]->children[j], NULL, 0);
 	}
+	printf("FREE_POS: %#x\n", find_free_dir_entry(directory_structs[did]));
 	return 0;
 }
 
@@ -512,7 +593,15 @@ static int fuse_rs_unlink_file(const char* path) {
 	unsigned char* name = file -> name;
 	struct redsea_directory* parent = file -> parent;
 	unsigned long long int seek_to = file -> seek_to;	
-	return redsea_remove_common(parent, seek_to, name);
+	if (redsea_remove_common(parent, seek_to, name) == -1) return -1;
+
+	for (unsigned long long int i = fid; i<file_count; i++) {
+		file_structs[i]=file_structs[i+1];
+		file_paths[i]=file_paths[i+1];
+	}
+	file_count--;
+
+	return 0;
 }
 /* Delete directory:
  * I am pretty sure this deletion is incomplete according to
@@ -534,7 +623,17 @@ static int fuse_rs_rmdir(const char* path) {
 	unsigned char* name = directory -> name;
 	struct redsea_directory* parent = directory -> parent;
 	unsigned long long int seek_to = directory -> seek_to;
-	return redsea_remove_common(parent, seek_to, name);
+
+	if (redsea_remove_common(parent, seek_to, name) == -1) return -1;
+
+	for (unsigned long long int i = did; i<directory_count; i++) {
+		directory_structs[i]=directory_structs[i+1];
+		directory_paths[i]=directory_paths[i+1];
+	}
+	directory_count--;
+
+	return 0;
+
 }
 
 // Both of the below functions just return 0. Unneccesary for redsea
@@ -571,6 +670,76 @@ static void fuse_rs_destroy() {
 	rewrite_redsea_boot();
 }
 
+static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info* fi) {
+	// check if it already exists
+	printf("!!! ENTER RS CREATE !!!\n");
+	unsigned long long int fid = file_position(path);
+	printf("FID: %#x", fid);
+	if (fid != -1) return -1;
+	
+	char* last_slash = strrchr(path, '/');
+
+	int dirlen = last_slash - path;
+	char* directory_path = malloc(dirlen);
+	strncpy(directory_path, path, dirlen);
+	
+	fprintf(stderr, "%s\n", directory_path);
+
+	unsigned long long int did = directory_position(directory_path);
+	if (did == -1) return -1;
+	
+	struct redsea_directory* parent = directory_structs[did];
+
+	if (parent->num_children >= parent->size/64) {
+		move_directory_to_end(parent);	
+	}
+
+	// if name too long
+	if (strlen(last_slash+1) > 38) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+
+	uint16_t filetype = 0;
+	long long int unix_time = time(NULL);
+	unsigned long long int CDate = unix_to_cdate(unix_time);
+	unsigned long long int size = 0;
+	unsigned long long int block = free_space_pointer;
+	free_space_pointer+=BLOCK_SIZE;
+	unsigned char* name = malloc(38);
+	strcpy(name, last_slash+1);
+
+	// if compressed
+	if (strcmp(last_slash+strlen(last_slash)-2, ".Z") == 0) {
+		filetype += 0x400;
+	}
+	filetype += 0x800;	// contiguous
+	filetype += 0x20;	// file
+	
+	unsigned long long int seek_to = add_entry_to_dir(parent, filetype, name, block, size, CDate);
+	
+	if (file_count+1 > max_file_count) expand_file_array();
+	
+	struct redsea_file* new_file = malloc(sizeof(struct redsea_file));
+	new_file -> seek_to = seek_to;
+	strcpy(new_file->name, name);
+	new_file -> size = size;
+	new_file -> block = block;
+	new_file -> mod_date = CDate;
+	new_file -> parent = parent;
+	
+	unsigned char* pathcp = malloc(strlen(path)+1);
+	strcpy(pathcp, path);
+	file_paths[file_count] = pathcp;
+	file_structs[file_count] = new_file;
+
+	file_count++;
+
+	//unimplemented so far
+	return 0;
+
+}
+
 static struct fuse_operations redsea_ops = {
 	.getattr = fuse_rs_file_attributes,
 	.readdir = fuse_rs_read_directory,
@@ -582,6 +751,7 @@ static struct fuse_operations redsea_ops = {
 	.open = fuse_rs_open_file,				// open and opendir should just return 0 afaik. no need
 	.opendir = fuse_rs_open_dir,				// for stuff like that in RedSea
 	.destroy = fuse_rs_destroy,
+	.create = fuse_rs_create,
 	
 };
 

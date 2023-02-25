@@ -36,7 +36,35 @@ In RedSea block `0x58` byte `0x18` seems to always point to the block starting t
 
 Directories are split into 64 byte blocks indicating different files and subdirectories contained within the directory. The first two entries are always the directory itself and its parent directory `..`
 
-Entries start with one of 3 possible 2 byte markers: `0x0820`, `0x0820`, and `0x0C20` which indicate whether the entry is a directory, a file, or a compressed file, respectively.
+Entries start with a 2 byte file attribute entry with the following possible attributes:
+
+
+`0x01` - Read Only
+
+`0x02` - Hidden
+
+`0x04` - System
+
+`0x08` - Volume ID
+
+`0x10` - Directory
+
+`0x20` - Archive (file?)
+
+`0x100` - Deleted
+
+`0x200` - Resident
+
+`0x400` - Compressed
+
+`0x800` - Contiguous (seems to be true even without this attribute though? all RedSea files are contiguous)
+
+`0x1000` - Fixed
+
+
+Note that some of these attributes, such as "Read Only" are unsupported by this driver.
+
+There are also attributes for long names. These are not supported by this driver at the time. 
 
 The marker is followed by a 38 bit section for a name. 
 
