@@ -262,8 +262,12 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 											// but nothing actually gets created there
 											// (it would be rather difficult to find a 
 											// 16 EiB disk anways)
-			if ((file_block*BLOCK_SIZE + file_size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
-				free_space_pointer = (file_block*BLOCK_SIZE+file_size+BLOCK_SIZE-1)/BLOCK_SIZE+2;
+			
+			// below really should probably be > and not >= but it makes it slightly easier to deal with 0
+			// size files. I should have just gone the proper TOS implementation route in doing this.
+			// but I didn't
+			if ((file_block*BLOCK_SIZE + file_size + BLOCK_SIZE-1) / BLOCK_SIZE >= free_space_pointer) {
+				free_space_pointer = (file_block*BLOCK_SIZE+file_size+BLOCK_SIZE-1)/BLOCK_SIZE+1;
 			}
 		}
 	}
@@ -449,10 +453,10 @@ void write_file(struct redsea_file* file, const char* buffer, size_t size, off_t
 	fseek(image, file->seek_to+48, SEEK_CUR);
 	fwrite(size_char, 8, 1, image);
 	fseek(image, 0, SEEK_END);
-
-	if ((block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
+	
+	if ((block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE >= free_space_pointer) {
 		free_space_pointer = (block*BLOCK_SIZE+file->size-BLOCK_SIZE-1)/BLOCK_SIZE+1;
-	}	
+	}
 
 }
 
@@ -705,7 +709,7 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	unsigned long long int CDate = unix_to_cdate(unix_time);
 	unsigned long long int size = 0;
 	unsigned long long int block = free_space_pointer;
-	free_space_pointer+=BLOCK_SIZE;
+	free_space_pointer++;
 	unsigned char* name = calloc(38, 1);
 	strcpy(name, last_slash+1);
 
@@ -726,7 +730,11 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	new_file -> block = block;
 	new_file -> mod_date = CDate;
 	new_file -> parent = parent;
-	
+
+	parent->children[parent->num_children] = malloc(strlen(name)+1);
+	strcpy(parent->children[parent->num_children], name);
+	parent->num_children = parent->num_children+1;
+
 	unsigned char* pathcp = malloc(strlen(path)+1);
 	strcpy(pathcp, path);
 	printf("%s\n", pathcp);
@@ -760,6 +768,7 @@ static int fuse_rs_rename(const char* path, const char* newpath) {
 	unsigned char* last_slash = strrchr(newpath, '/');
 	unsigned char* new_name = calloc(38, 1);
 	unsigned char* pathcp = malloc(strlen(newpath)+1);
+	unsigned char* old_name = calloc(38, 1);
 	strcpy(pathcp, newpath);
 
 	if (strlen(last_slash+1) > 38) {
@@ -772,21 +781,39 @@ static int fuse_rs_rename(const char* path, const char* newpath) {
 	printf("NEW NAME: %s !!!!!\n", new_name);
 
 	if (did != -1) {
+		strcpy(old_name, directory_structs[did]->name);
 		strcpy(directory_structs[did] -> name, new_name);
 		parent = directory_structs[did] -> parent;
 		seek_to = directory_structs[did] -> seek_to;
 		directory_paths[did] = pathcp;
 	}
 	else {
+		strcpy(old_name, file_structs[fid]->name);
 		strcpy(file_structs[fid] -> name, new_name);
 		parent = file_structs[fid] -> parent;
 		seek_to = file_structs[fid] -> seek_to;
 		file_paths[fid] = pathcp;
 	}
+	
+	unsigned long long int pid;
 
+	for (int i = 0; i < parent->num_children; i++) {
+		if (strcmp(old_name, parent->children[i]) == 0) {
+			pid = i;
+			break;
+		}
+	}
+	printf("PID: %d\n", pid);
+
+	parent->children[pid] = malloc(strlen(new_name)+1);
+	strcpy(parent->children[pid], new_name);
+
+	printf("SF??\n");
 	rewind(image);
 	fseek(image, parent->block*BLOCK_SIZE, SEEK_SET);
 	fseek(image, seek_to, SEEK_CUR);
+	fseek(image, 2, SEEK_CUR);
+	fwrite(new_name, 38, 1, image); 
 	
 	return 0;
 }
