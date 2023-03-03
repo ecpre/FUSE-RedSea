@@ -1,14 +1,14 @@
 
 # RedSea FUSE Drivers
 
-FUSE drivers to support the RedSea filesystem. Currently read only.
+FUSE drivers to support the RedSea filesystem. Supports full R/W access to ISO.C files.
 
 
 
 ## Features
 
-- Read-only support for the RedSea filesystem on TempleOS ISO.C files
-- Should hopefully support writing as development continues and I look into how space allocation works.
+- Supports full read and write to ISO.C files
+- Does not support writing to raw RedSea filesystem images, nor does it support creating new ISO.C images. Hopefully these will be supported soon.
 
 
 ## Documentation
@@ -17,10 +17,13 @@ To use this program, you should have FUSE installed on your system. You should t
 
 where `RedSea.ISO.C` is any RedSea ISO.C file and `directory` is the directory you wish to view the filesystem in.
 
+THIS IS A VERY EARLY RELEASE. THIS MAY SOMEHOW BREAK YOUR ISO.C FILES. So please create a backup of any ISO.C files you wish to use with this program, especially if plan on writing to the disk.
+
+This is not a completely faithful implementation of the RedSea filesystem. Any ISO.C files modified with this porgram should work with TempleOS, but they might not. Please report any inconsistencies to me.
+
 ## RedSea Documentation
 
 Some documenation of what I know about the RedSea filesystem
-
 
 ### Blocks
 
@@ -81,6 +84,7 @@ CDate is TempleOS's custom date format, based off of the birth of Christ.
 CDates are given using a 64 bit integer, with the upper 32 bits `0xFFFFFFFF` representing the number of days since the birth of Christ 719527 days before the unix epoch start and the lower 32 bits `0xFFFFFFFF` representing the time of day divided by 4 billion, giving it the precision of 1/49710ths of a second.
 
 As an example: the CDATE `0x000B4371D95FF3DD` would represent January 7th, 2021 at 20:22:44, with `0x00B04371` representing the days since the birth of christ and `0xD95FF3DD` representing the number of 1/49710ths of a second intervals since the start of the day.
+
 # Credits
 
 Terrence Andrew Davis for creating the RedSea filesystem and TempleOS.

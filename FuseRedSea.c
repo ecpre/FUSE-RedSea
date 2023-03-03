@@ -373,14 +373,17 @@ void move_directory_to_end(struct redsea_directory* directory) {
 	// add more space for directory
 	size += BLOCK_SIZE;
 	directory->size = size;
-	directory->children = realloc(directory, sizeof(char*)*size/64);
+	directory->children = realloc(directory->children, sizeof(char*)*size/64);
 
 	rewind(image);
 	fseek(image, directory->parent->block*BLOCK_SIZE + directory->seek_to, SEEK_SET);
 	fseek(image, 40, SEEK_CUR);				// find block
 	unsigned char nb_char[8] = {new_block & 0xff, (new_block >> 8) & 0xff, (new_block >> 16) & 0xff, (new_block>>24) & 0xff,
 		(new_block>>32) & 0xff, (new_block >> 40) & 0xff, (new_block >> 48) & 0xff, (new_block >> 56) & 0xff};
+	unsigned char size_char[8] = {size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >> 24) & 0xff, (size >> 32) & 0xff,
+		(size >> 40) & 0xff, (size >> 48) & 0xff, (size >> 56) & 0xff};
 	fwrite(nb_char, 8, 1, image);
+	fwrite(size_char, 8, 1, image);
 
 	rewind(image); // SEEK_SET just set the pointer. I don't know why I use
 		       // rewind so much.
@@ -393,7 +396,7 @@ void move_directory_to_end(struct redsea_directory* directory) {
 		uint16_t filetype;
 		fseek(image, 128 + i*64, SEEK_CUR);
 		fread(&filetype, 2, 1, image);
-		if ((filetype >> 5) & 1 == 1) {		// If file is a directory
+		if ((filetype >> 4) & 1 == 1) {		// If file is a directory
 			fseek(image, 38, SEEK_CUR);
 			unsigned long long int subdir_block;
 			fread(&subdir_block, 8, 1, image);
@@ -401,6 +404,9 @@ void move_directory_to_end(struct redsea_directory* directory) {
 			fseek(image, subdir_block*BLOCK_SIZE, SEEK_SET);
 			fseek(image, 104, SEEK_CUR);
 			fwrite(nb_char, 8, 1, image);
+			unsigned char* blank = calloc(8, 1);
+			fwrite(blank, 8, 1, image);
+			free(blank);
 		}
 
 	}
@@ -446,12 +452,20 @@ void write_file(struct redsea_file* file, const char* buffer, size_t size, off_t
 	if ((size+offset) > file->size) {
 		file->size += (size+offset)-file->size;			// set file size
 	}
+	long long int unix_time = time(NULL);
+	unsigned long long int CDate = unix_to_cdate(unix_time);
+
+	file->mod_date = CDate;
+
 	unsigned char size_char[8] = {file->size & 0xff, (file->size >> 8) & 0xff, (file->size >> 16) & 0xff, (file->size>>24) & 0xff,
 		(file->size>>32) & 0xff, (file->size >> 40) & 0xff, (file->size >> 48) & 0xff, (file->size >> 56) & 0xff};
+	unsigned char cdate_char[8] = {CDate & 0xff, (CDate >> 8) & 0xff, (CDate >> 16) & 0xff, (CDate >> 24) & 0xff, (CDate >> 32) & 0xff,
+		(CDate >> 40) & 0xff, (CDate >> 48) & 0xff, (CDate >> 56) & 0xff};
 	rewind(image);
 	fseek(image, file->parent->block*BLOCK_SIZE, SEEK_SET);
 	fseek(image, file->seek_to+48, SEEK_CUR);
 	fwrite(size_char, 8, 1, image);
+	fwrite(cdate_char, 8, 1, image);
 	fseek(image, 0, SEEK_END);
 	
 	if ((block*BLOCK_SIZE + file->size + BLOCK_SIZE-1) / BLOCK_SIZE >= free_space_pointer) {
@@ -528,6 +542,44 @@ unsigned long long int add_entry_to_dir(struct redsea_directory* directory, uint
 	fwrite(block_buf, 8, 1, image);
 	fwrite(size_buf, 8, 1, image);
 	fwrite(timestamp_buf, 8, 1, image);
+	
+	// if directory
+	if ((attributes >> 4) & 1 == 1) {
+		printf("DIR!!!\n");
+		rewind(image);
+		fseek(image, block*BLOCK_SIZE, SEEK_SET);
+		fwrite(att_buf, 2, 1, image);
+		fwrite(name_buf, 38, 1, image);
+		fwrite(block_buf, 8, 1, image);
+		fwrite(size_buf, 8, 1, image);
+		fwrite(timestamp_buf, 8, 1, image);
+		rewind(image);
+		fseek(image, directory->block*BLOCK_SIZE, SEEK_SET);
+		unsigned char* parent_buf = calloc(64, 1);
+		fread(parent_buf, 64, 1, image);
+		rewind(image);
+		fseek(image, block*BLOCK_SIZE, SEEK_SET);
+		fseek(image, 64, SEEK_CUR);
+		fwrite(parent_buf, 64, 1, image);
+		fseek(image, -62, SEEK_CUR);
+		unsigned char* par_name_buf = calloc(38,1);
+		strcpy(par_name_buf, "..");
+		fwrite(par_name_buf, 38, 1, image);
+		fseek(image, 8, SEEK_CUR);
+		unsigned char* blank = calloc(8, 1);
+		fwrite(blank, 8, 1, image);
+		free(blank);
+		// overwrite anything after so no tos errors occur
+		blank = calloc(0x180, 1);
+		fseek(image, 8, SEEK_CUR);
+		fwrite(blank, 0x180, 1, image);
+		free(blank);
+	}
+	else {
+		printf("FILE!!!\n");
+	}
+
+	free(name_buf);
 
 	return next_free - directory->block*BLOCK_SIZE;
 
@@ -679,7 +731,10 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	printf("!!! ENTER RS CREATE !!!\n");
 	unsigned long long int fid = file_position(path);
 	printf("FID: %#x", fid);
-	if (fid != -1) return -1;
+	if (fid != -1) {
+		errno = EEXIST;
+		return -errno; 	
+	}
 	
 	char* last_slash = strrchr(path, '/');
 
@@ -690,11 +745,14 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	fprintf(stderr, "%s\n", directory_path);
 
 	unsigned long long int did = directory_position(directory_path);
-	if (did == -1) return -1;
+	if (did == -1) {
+		errno = ENOENT;
+		return -errno;
+	}
 	
 	struct redsea_directory* parent = directory_structs[did];
 
-	if (parent->num_children >= parent->size/64) {
+	if (parent->num_children+2 >= parent->size/64) {
 		move_directory_to_end(parent);	
 	}
 
@@ -750,6 +808,84 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 
 }
 
+/* mkdir operation
+ *
+ * a LOT of overlap between this and the above function. I should
+ * probably make this have some sort of common function.
+ */
+
+static int fuse_rs_mkdir(const char* path, mode_t perms) {
+	unsigned long long int did = directory_position(path);
+	if (did != -1) {
+		errno = EEXIST;
+		return -errno;
+	}
+
+	char* last_slash = strrchr(path, '/');
+
+	int parlen = last_slash - path;
+	char* parent_path = malloc(parlen);
+	strncpy(parent_path, path, parlen);
+
+	unsigned long long int pdid = directory_position(parent_path);
+
+	if (pdid == -1) {
+		errno = ENOENT;
+		return -errno;
+	}
+
+	struct redsea_directory* parent = directory_structs[pdid];
+
+	if (parent->num_children+2 >= parent->size/64) {
+		move_directory_to_end(parent);	
+	}
+
+	if (strlen(last_slash+1) > 38) {
+		errno = ENAMETOOLONG;
+		return -errno;
+	}
+	
+	uint16_t filetype = 0;
+	long long int unix_time = time(NULL);
+	unsigned long long int CDate = unix_to_cdate(unix_time);
+	unsigned long long int size = 512;
+	unsigned long long int block = free_space_pointer;
+	free_space_pointer++;
+	unsigned char* name = calloc(38, 1);
+	strcpy(name, last_slash+1);
+
+	filetype += 0x800;	// contiguous
+	filetype += 0x10;	// directory
+	
+	unsigned long long int seek_to = add_entry_to_dir(parent, filetype, name, block, size, CDate);
+
+	if (directory_count+1 > max_directory_count) expand_directory_array();
+
+	struct redsea_directory* new_dir = malloc(sizeof(struct redsea_directory));
+	new_dir -> seek_to = seek_to;
+	strcpy(new_dir->name, name);
+	new_dir -> size = size;
+	new_dir -> block = block;
+	new_dir -> mod_date = CDate;
+	new_dir -> parent = parent;
+	new_dir -> children = malloc(sizeof(char*)*(size/64));
+	new_dir -> num_children = 0;
+
+	parent->children[parent->num_children] = malloc(strlen(name)+1);
+	strcpy(parent->children[parent->num_children], name);
+	parent->num_children = parent->num_children+1;
+
+	unsigned char* pathcp = malloc(strlen(path)+1);
+	strcpy(pathcp, path);
+	printf("%s\n", pathcp);
+	directory_paths[directory_count] = pathcp;
+	directory_structs[directory_count] = new_dir;
+
+	directory_count++;
+
+	free(name);
+}
+
 static int fuse_rs_rename(const char* path, const char* newpath) {
 	printf("TEST \n");
 
@@ -772,7 +908,6 @@ static int fuse_rs_rename(const char* path, const char* newpath) {
 	strcpy(pathcp, newpath);
 
 	if (strlen(last_slash+1) > 38) {
-		printf("test????\n");
 		errno = ENAMETOOLONG;
 		return -errno;
 	}
@@ -830,6 +965,7 @@ static struct fuse_operations redsea_ops = {
 	.opendir = fuse_rs_open_dir,				// for stuff like that in RedSea
 	.destroy = fuse_rs_destroy,
 	.create = fuse_rs_create,
+	.mkdir = fuse_rs_mkdir,
 	.rename = fuse_rs_rename,
 	
 };
