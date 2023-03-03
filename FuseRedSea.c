@@ -512,7 +512,7 @@ unsigned long long int find_free_dir_entry(struct redsea_directory* directory) {
 	for (int i = 0; i < directory->num_children; i++) {
 		uint16_t filetype;
 		fread(&filetype, 2, 1, image);
-		if ((filetype >> 9) & 1 == 1) {			// if file is deleted it is free
+		if ((filetype >> 8) & 1 == 1) {			// if file is deleted it is free
 			fseek(image, -2, SEEK_CUR);
 			break;
 		}
