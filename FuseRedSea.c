@@ -542,8 +542,8 @@ static int fuse_rs_file_attributes(const char *path, struct stat *st) {
 	else {
 		unsigned long long int fid = file_position(path);			// fid is File ID
 		if (fid == -1) {
-			errno = EBADF;
-			return 0;		
+			errno = ENOENT;
+			return -errno;	
 		}
 		else {
 			st->st_size = file_structs[fid]->size;
@@ -587,7 +587,7 @@ static int fuse_rs_unlink_file(const char* path) {
 	unsigned long long int fid = file_position(path);
 	if (fid == -1) {
 		if (directory_position(path) != 0) errno = EISDIR;
-		return -1;
+		return -errno;
 	}
 	struct redsea_file* file = file_structs[fid];
 	unsigned char* name = file -> name;
@@ -613,12 +613,12 @@ static int fuse_rs_rmdir(const char* path) {
 	unsigned long long int did = directory_position(path);
 	if (did == -1) {
 		errno = ENOTDIR;
-		return -1;
+		return -errno;
 	}
 	struct redsea_directory* directory = directory_structs[did];
 	if (directory->num_children != 0) {
 		errno = ENOTEMPTY;
-		return -1;
+		return -errno;
 	}
 	unsigned char* name = directory -> name;
 	struct redsea_directory* parent = directory -> parent;
@@ -697,7 +697,7 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	// if name too long
 	if (strlen(last_slash+1) > 38) {
 		errno = ENAMETOOLONG;
-		return -1;
+		return -errno;
 	}
 
 	uint16_t filetype = 0;
@@ -706,7 +706,7 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	unsigned long long int size = 0;
 	unsigned long long int block = free_space_pointer;
 	free_space_pointer+=BLOCK_SIZE;
-	unsigned char* name = malloc(38);
+	unsigned char* name = calloc(38, 1);
 	strcpy(name, last_slash+1);
 
 	// if compressed
@@ -714,7 +714,6 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 		filetype += 0x400;
 	}
 	filetype += 0x800;	// contiguous
-	filetype += 0x20;	// file
 	
 	unsigned long long int seek_to = add_entry_to_dir(parent, filetype, name, block, size, CDate);
 	
@@ -730,14 +729,66 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	
 	unsigned char* pathcp = malloc(strlen(path)+1);
 	strcpy(pathcp, path);
+	printf("%s\n", pathcp);
 	file_paths[file_count] = pathcp;
 	file_structs[file_count] = new_file;
 
 	file_count++;
 
+	free(name);
+
 	//unimplemented so far
 	return 0;
 
+}
+
+static int fuse_rs_rename(const char* path, const char* newpath) {
+	printf("TEST \n");
+
+	unsigned long long int fid = file_position(path);
+	unsigned long long int did = directory_position(path);
+	if (fid == -1 && did == -1) {
+		printf("error????? \n");
+		errno = ENOENT;
+		return -errno;
+	}
+
+	
+	struct redsea_directory* parent;
+	unsigned long long int seek_to;
+
+	unsigned char* last_slash = strrchr(newpath, '/');
+	unsigned char* new_name = calloc(38, 1);
+	unsigned char* pathcp = malloc(strlen(newpath)+1);
+	strcpy(pathcp, newpath);
+
+	if (strlen(last_slash+1) > 38) {
+		printf("test????\n");
+		errno = ENAMETOOLONG;
+		return -errno;
+	}
+	strcpy(new_name, last_slash+1);
+
+	printf("NEW NAME: %s !!!!!\n", new_name);
+
+	if (did != -1) {
+		strcpy(directory_structs[did] -> name, new_name);
+		parent = directory_structs[did] -> parent;
+		seek_to = directory_structs[did] -> seek_to;
+		directory_paths[did] = pathcp;
+	}
+	else {
+		strcpy(file_structs[fid] -> name, new_name);
+		parent = file_structs[fid] -> parent;
+		seek_to = file_structs[fid] -> seek_to;
+		file_paths[fid] = pathcp;
+	}
+
+	rewind(image);
+	fseek(image, parent->block*BLOCK_SIZE, SEEK_SET);
+	fseek(image, seek_to, SEEK_CUR);
+	
+	return 0;
 }
 
 static struct fuse_operations redsea_ops = {
@@ -752,6 +803,7 @@ static struct fuse_operations redsea_ops = {
 	.opendir = fuse_rs_open_dir,				// for stuff like that in RedSea
 	.destroy = fuse_rs_destroy,
 	.create = fuse_rs_create,
+	.rename = fuse_rs_rename,
 	
 };
 
