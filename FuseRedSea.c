@@ -739,7 +739,7 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	char* last_slash = strrchr(path, '/');
 
 	int dirlen = last_slash - path;
-	char* directory_path = malloc(dirlen);
+	char* directory_path = calloc(dirlen+1,1);
 	strncpy(directory_path, path, dirlen);
 	
 	fprintf(stderr, "%s\n", directory_path);
@@ -768,7 +768,7 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	unsigned long long int size = 0;
 	unsigned long long int block = free_space_pointer;
 	free_space_pointer++;
-	unsigned char* name = calloc(38, 1);
+	unsigned char* name = calloc(38,1);
 	strcpy(name, last_slash+1);
 
 	// if compressed
@@ -824,7 +824,7 @@ static int fuse_rs_mkdir(const char* path, mode_t perms) {
 	char* last_slash = strrchr(path, '/');
 
 	int parlen = last_slash - path;
-	char* parent_path = malloc(parlen);
+	char* parent_path = calloc(parlen+1, 1);
 	strncpy(parent_path, path, parlen);
 
 	unsigned long long int pdid = directory_position(parent_path);
