@@ -890,6 +890,7 @@ static int fuse_rs_mkdir(const char* path, mode_t perms) {
 	directory_count++;
 
 	free(name);
+	return 0;
 }
 
 static int fuse_rs_rename(const char* path, const char* newpath) {
