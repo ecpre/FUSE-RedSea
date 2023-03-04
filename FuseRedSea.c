@@ -390,6 +390,7 @@ void move_directory_to_end(struct redsea_directory* directory) {
 	fseek(image, new_block*BLOCK_SIZE, SEEK_SET);
        	fseek(image, 40, SEEK_CUR);
 	fwrite(nb_char, 8, 1, image);
+	fwrite(size_char, 8, 1, image);
 	for (int i = 0; i < directory -> num_children; i++) {
 		rewind(image);
 		fseek(image, directory->block*BLOCK_SIZE, SEEK_SET);
