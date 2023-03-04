@@ -725,6 +725,7 @@ static void fuse_rs_destroy() {
 		fwrite(buf, 1, padding, image);
 	}
 	rewrite_redsea_boot();
+	fclose(image);
 }
 
 static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info* fi) {
