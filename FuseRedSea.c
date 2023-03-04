@@ -217,7 +217,7 @@ void redsea_read_files(struct redsea_directory* directory, unsigned char *path_s
 				if (directory_count+1 >= max_directory_count) {
 					expand_directory_array();
 				}
-				directory_paths[directory_count] = malloc(strlen(path));
+				directory_paths[directory_count] = malloc(strlen(path)+1);
 				strcpy(directory_paths[directory_count], path);	
 				struct redsea_directory* directory_entry = malloc(sizeof(struct redsea_directory));
 				strcpy(directory_entry->name, name);
