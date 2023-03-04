@@ -337,6 +337,8 @@ void move_file_to_end(struct redsea_file* file) {
 	fread(buf, 1, size, image);
 	fseek(image, new_block*BLOCK_SIZE, SEEK_SET);
 	fwrite(buf, 1, size, image);
+	free(buf);	
+
 	file -> block = new_block;
 	rewind(image);
 	fseek(image, file->parent->block*BLOCK_SIZE + file->seek_to, SEEK_SET);
@@ -347,7 +349,7 @@ void move_file_to_end(struct redsea_file* file) {
 	// should be always true?
 	if ((new_block*BLOCK_SIZE + size + BLOCK_SIZE-1) / BLOCK_SIZE > free_space_pointer) {
 			free_space_pointer = (new_block*BLOCK_SIZE+size+BLOCK_SIZE-1)/BLOCK_SIZE+1;
-	}	
+	}
 }
 
 // could probably merge a lot of this functions functionality with the above function
@@ -574,6 +576,8 @@ unsigned long long int add_entry_to_dir(struct redsea_directory* directory, uint
 		blank = calloc(0x180, 1);
 		fseek(image, 8, SEEK_CUR);
 		fwrite(blank, 0x180, 1, image);
+		free(parent_buf);
+		free(par_name_buf);
 		free(blank);
 	}
 	else {
