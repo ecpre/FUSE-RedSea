@@ -17,7 +17,7 @@ To use this program, you should have FUSE installed on your system. You should t
 
 where `RedSea.ISO.C` is any RedSea ISO.C file and `directory` is the directory you wish to view the filesystem in.
 
-THIS IS A VERY EARLY RELEASE. THIS MAY SOMEHOW BREAK YOUR ISO.C FILES. So please create a backup of any ISO.C files you wish to use with this program, especially if plan on writing to the disk.
+THIS IS A VERY EARLY RELEASE. THIS MAY SOMEHOW BREAK YOUR ISO.C FILES. So please create a backup of any ISO.C files you wish to use with this program, especially if you plan on writing to the disk.
 
 This is not a completely faithful implementation of the RedSea filesystem. Any ISO.C files modified with this porgram should work with TempleOS, but they might not. Please report any inconsistencies to me.
 
