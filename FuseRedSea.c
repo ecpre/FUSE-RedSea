@@ -450,8 +450,9 @@ void write_file(struct redsea_file* file, const char* buffer, size_t size, off_t
 	rewind(image);
 	fseek(image, block*BLOCK_SIZE, SEEK_SET);
 	fseek(image, offset, SEEK_CUR);
-	// pad last RS block
 	fwrite(buffer, size, 1, image);
+
+	// is this check unnecessary after properly implementing truncate? I think so? I'll leave it in.
 	if ((size+offset) > file->size) {
 		file->size += (size+offset)-file->size;			// set file size
 	}
@@ -713,10 +714,27 @@ static int fuse_rs_write(const char* path, const char* buffer, size_t size, off_
 	return size;
 }
 
-static int fuse_rs_truncate(const char* path, off_t offset) {	
+static int fuse_rs_truncate(const char* path, off_t length) {
 
-	// we are just going to ignore truncate ;)
-	return offset;
+	/* It seems that I forgot the proper reasons for truncate to exist when I
+	 * release this last time. :(
+	 * Corrupted files shouldn't be an issue anymore
+	 */	
+	unsigned long long int fid = file_position(path);
+	struct redsea_file* file = file_structs[fid];
+	
+	file->size = length;
+	
+	unsigned char size_char[8] = {length & 0xff, (length >> 8) & 0xff, (length >> 16) & 0xff, (length >> 24) & 0xff,
+		(length >> 32) & 0xff, (length >> 40) & 0xff, (length >> 48) & 0xff, (length >> 56) & 0xff};
+
+	rewind(image);
+	fseek(image, file->parent->block*BLOCK_SIZE, SEEK_SET);
+	fseek(image, file->seek_to, SEEK_CUR);
+	fseek(image, 48, SEEK_CUR);
+	fwrite(size_char, 8, 1, image);
+	
+	return length;
 }
 
 static void fuse_rs_destroy() {
