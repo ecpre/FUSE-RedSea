@@ -809,7 +809,6 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 
 	free(name);
 
-	//unimplemented so far
 	return 0;
 
 }
