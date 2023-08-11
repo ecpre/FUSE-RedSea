@@ -768,7 +768,11 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	
 	fprintf(stderr, "%s\n", directory_path);
 
-	unsigned long long int did = directory_position(directory_path);
+	unsigned long long int did;
+	// dirlen 0 means root
+	if (dirlen == 0) did = 0;
+	else did = directory_position(directory_path);
+
 	if (did == -1) {
 		errno = ENOENT;
 		return -errno;
@@ -849,14 +853,17 @@ static int fuse_rs_mkdir(const char* path, mode_t perms) {
 	int parlen = last_slash - path;
 	char* parent_path = calloc(parlen+1, 1);
 	strncpy(parent_path, path, parlen);
-
-	unsigned long long int pdid = directory_position(parent_path);
-
+	
+	unsigned long long int pdid;
+	// parlen 0 means parent is root
+	if (parlen == 0) pdid = 0;
+	else pdid = directory_position(parent_path);
+	
 	if (pdid == -1) {
 		errno = ENOENT;
 		return -errno;
 	}
-
+	
 	struct redsea_directory* parent = directory_structs[pdid];
 
 	if (parent->num_children+2 >= parent->size/64) {
