@@ -767,11 +767,13 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	strncpy(directory_path, path, dirlen);
 	
 	fprintf(stderr, "%s\n", directory_path);
+	
+	unsigned long long int did = directory_position(directory_path);
 
-	unsigned long long int did;
+	//unsigned long long int did;
 	// dirlen 0 means root
-	if (dirlen == 0) did = 0;
-	else did = directory_position(directory_path);
+	//if (dirlen == 0) did = 0;
+	//else did = directory_position(directory_path);
 
 	if (did == -1) {
 		errno = ENOENT;
@@ -854,10 +856,11 @@ static int fuse_rs_mkdir(const char* path, mode_t perms) {
 	char* parent_path = calloc(parlen+1, 1);
 	strncpy(parent_path, path, parlen);
 	
-	unsigned long long int pdid;
+	unsigned long long int pdid = directory_position(parent_path);
+	//unsigned long long int pdid;
 	// parlen 0 means parent is root
-	if (parlen == 0) pdid = 0;
-	else pdid = directory_position(parent_path);
+	//if (parlen == 0) pdid = 0;
+	//else pdid = directory_position(parent_path);
 	
 	if (pdid == -1) {
 		errno = ENOENT;
