@@ -294,7 +294,6 @@ unsigned char* redsea_file_content(struct redsea_file* rs_file, size_t size, off
 }
 
 int redsea_remove_common(struct redsea_directory* parent, unsigned long long int seek_to, unsigned char* name) {
-
 	unsigned long long int loc = -1;			//file loc in parent->children
 	for (int i = 0; i<parent->num_children; i++) {
 		if (strcmp(parent->children[i], name) == 0) {
@@ -378,14 +377,18 @@ void move_directory_to_end(struct redsea_directory* directory) {
 	directory->children = realloc(directory->children, sizeof(char*)*size/64);
 
 	rewind(image);
-	fseek(image, directory->parent->block*BLOCK_SIZE + directory->seek_to, SEEK_SET);
-	fseek(image, 40, SEEK_CUR);				// find block
+	if (strcmp(directory->name, ".") != 0) {
+		fseek(image, directory->parent->block*BLOCK_SIZE + directory->seek_to, SEEK_SET);
+		fseek(image, 40, SEEK_CUR);				// find block
+	}
 	unsigned char nb_char[8] = {new_block & 0xff, (new_block >> 8) & 0xff, (new_block >> 16) & 0xff, (new_block>>24) & 0xff,
 		(new_block>>32) & 0xff, (new_block >> 40) & 0xff, (new_block >> 48) & 0xff, (new_block >> 56) & 0xff};
 	unsigned char size_char[8] = {size & 0xff, (size >> 8) & 0xff, (size >> 16) & 0xff, (size >> 24) & 0xff, (size >> 32) & 0xff,
 		(size >> 40) & 0xff, (size >> 48) & 0xff, (size >> 56) & 0xff};
-	fwrite(nb_char, 8, 1, image);
-	fwrite(size_char, 8, 1, image);
+	if (strcmp(directory->name, ".") != 0) {
+		fwrite(nb_char, 8, 1, image);
+		fwrite(size_char, 8, 1, image);
+	}
 
 	rewind(image); // SEEK_SET just set the pointer. I don't know why I use
 		       // rewind so much.
@@ -647,8 +650,9 @@ static int fuse_rs_read_file(const char *path, char *buffer, size_t size, off_t 
 
 static int fuse_rs_unlink_file(const char* path) {
 	unsigned long long int fid = file_position(path);
+	printf("FID: %lld !!!!!!!\n");
 	if (fid == -1) {
-		if (directory_position(path) != 0) errno = EISDIR;
+		if (directory_position(path) != -1) errno = EISDIR;
 		return -errno;
 	}
 	struct redsea_file* file = file_structs[fid];
@@ -754,7 +758,7 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	// check if it already exists
 	printf("!!! ENTER RS CREATE !!!\n");
 	unsigned long long int fid = file_position(path);
-	printf("FID: %#x", fid);
+	printf("FID: %#x\n", fid);
 	if (fid != -1) {
 		errno = EEXIST;
 		return -errno; 	
@@ -767,15 +771,16 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 	strncpy(directory_path, path, dirlen);
 	
 	fprintf(stderr, "%s\n", directory_path);
+
+	if (strcmp(directory_path, "") == 0) {
+		strncpy(directory_path, "/", 1);
+	}
 	
 	unsigned long long int did = directory_position(directory_path);
 
-	//unsigned long long int did;
-	// dirlen 0 means root
-	//if (dirlen == 0) did = 0;
-	//else did = directory_position(directory_path);
-
 	if (did == -1) {
+		printf("%s\n", directory_path);
+		printf("ENOENT !!!! \n");
 		errno = ENOENT;
 		return -errno;
 	}
@@ -857,10 +862,6 @@ static int fuse_rs_mkdir(const char* path, mode_t perms) {
 	strncpy(parent_path, path, parlen);
 	
 	unsigned long long int pdid = directory_position(parent_path);
-	//unsigned long long int pdid;
-	// parlen 0 means parent is root
-	//if (parlen == 0) pdid = 0;
-	//else pdid = directory_position(parent_path);
 	
 	if (pdid == -1) {
 		errno = ENOENT;
