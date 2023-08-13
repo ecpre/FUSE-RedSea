@@ -421,11 +421,13 @@ void move_directory_to_end(struct redsea_directory* directory) {
 	 *root directory past block 0xFFFFFFFF 
 	 */
 	unsigned char rdb_char[8] = {nb_char[0], nb_char[1], nb_char[2], nb_char[3], nb_char[3], nb_char[2], nb_char[1], nb_char[0]};
+	printf("%s !!!!!!! \n", directory->name);
 	if (strcmp(directory->name, ".") == 0) {
+		printf("enter rdb rewrite!!!! \n");
 		rewind(image);
 		fseek(image, 0x8098, SEEK_SET);
 		fwrite(rdb_char, 8, 1, image);
-		fseek(image, 0x1000, SEEK_CUR);
+		fseek(image, 0xff8, SEEK_CUR);
 		fwrite(rdb_char, 8, 1, image);
 		fseek(image, 0x1f78, SEEK_CUR);
 		fwrite(nb_char, 8, 1, image);
@@ -860,6 +862,10 @@ static int fuse_rs_mkdir(const char* path, mode_t perms) {
 	int parlen = last_slash - path;
 	char* parent_path = calloc(parlen+1, 1);
 	strncpy(parent_path, path, parlen);
+
+	if (strcmp(parent_path, "") == 0) {
+		strncpy(parent_path, "/", 1);
+	}
 	
 	unsigned long long int pdid = directory_position(parent_path);
 	
