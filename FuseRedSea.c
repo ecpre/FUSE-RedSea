@@ -597,7 +597,14 @@ unsigned long long int add_entry_to_dir(struct redsea_directory* directory, uint
 }
 
 static int fuse_rs_file_attributes(const char *path, struct stat *st) {
-	if (strcmp(path, "/") == 0 || is_directory(path)) {
+
+	if (strncmp(path, "/.Trash", 7) == 0) {
+		errno = ENOENT;
+		return -errno;
+
+	}
+
+	else if (strcmp(path, "/") == 0 || is_directory(path)) {
 		unsigned long long int did = directory_position(path);			// did is Directory ID
 		if (did == -1) return -1;
 		st->st_size = directory_structs[did]->size;
@@ -852,6 +859,12 @@ static int fuse_rs_create(const char* path, mode_t perms, struct fuse_file_info*
 
 static int fuse_rs_mkdir(const char* path, mode_t perms) {
 	unsigned long long int did = directory_position(path);
+
+	if (strncmp(path, "/.Trash", 7) == 0) {
+		errno = EACCES;
+		return -errno;
+	}
+
 	if (did != -1) {
 		errno = EEXIST;
 		return -errno;
@@ -1053,7 +1066,7 @@ int main(int argc, char **argv) {
 		//redsea_read_files(rdb, size, image, ".", "");
 		redsea_read_files(root_directory, "");
 	}
-
+	
 	return fuse_main(argc, argv, &redsea_ops, NULL);
 	
 }
